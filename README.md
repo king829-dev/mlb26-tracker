@@ -22,34 +22,79 @@ mlb26-tracker/
 
 ## Setup
 
-1. [Install wrangler](https://developers.cloudflare.com/workers/wrangler/install-and-update/) if you don't
-   already have it, and log in to your own Cloudflare account:
-   ```bash
-   npm install -g wrangler
-   wrangler login
-   ```
-2. Create your own KV namespace:
-   ```bash
-   cd worker
-   wrangler kv namespace create INVENTORY
-   ```
-3. Copy the namespace `id` that command prints into `wrangler.toml` (replace
-   `REPLACE_WITH_YOUR_KV_NAMESPACE_ID`).
-4. Choose how you want the tracker to be reachable:
-   - **No personal domain? No problem.** Leave the `[[routes]]` block in `wrangler.toml` commented out.
-     Cloudflare automatically gives every Worker a free URL at
-     `https://<worker-name>.<your-subdomain>.workers.dev` (the `<your-subdomain>` part is a
-     Cloudflare-assigned account subdomain, visible in your dashboard after your first deploy). This
-     URL works exactly the same as a custom domain — nothing else to configure.
-   - **Have your own domain?** Uncomment the `[[routes]]` block in `wrangler.toml` and set `pattern` to
-     your domain instead.
-5. Deploy:
-   ```bash
-   wrangler deploy
-   ```
-6. Wrangler prints your deployed URL when it finishes (either your `*.workers.dev` URL or your custom
-   domain). Open it — the bookmarklet shown in the **Sync Data** panel automatically points at whichever
-   origin is serving it, so no code changes are needed either way.
+This assumes no prior setup — if you already have some of these tools installed, skip ahead.
+
+### 0. Prerequisites
+
+- **A Cloudflare account** (free tier is enough). If you don't have one, sign up at
+  [dash.cloudflare.com/sign-up](https://dash.cloudflare.com/sign-up) — just an email + password, no
+  credit card required for the free tier used here.
+- **Node.js** (which includes `npm`), needed to run the deploy tooling. If you don't have it, download
+  the "LTS" installer from [nodejs.org](https://nodejs.org) and run it. To check if you already have it:
+  ```bash
+  node -v
+  ```
+  If that prints a version number (e.g. `v20.11.0`), you're set.
+- **Git**, to download this repo. macOS and most Linux systems already have it (`git --version` to
+  check). On Windows, install [Git for Windows](https://git-scm.com/download/win).
+- A terminal / command line app: **Terminal** on macOS, **Command Prompt**, **PowerShell**, or
+  **Git Bash** on Windows.
+
+### 1. Get the code
+
+```bash
+git clone https://github.com/king829-dev/mlb26-tracker.git
+cd mlb26-tracker/worker
+```
+(No GitHub account needed to clone a public repo — this just downloads the files.)
+
+### 2. Install Wrangler (Cloudflare's deploy tool) and log in
+
+```bash
+npm install -g wrangler
+wrangler login
+```
+`wrangler login` opens a browser tab asking you to authorize Wrangler against your Cloudflare account —
+click **Allow**, then return to the terminal.
+
+### 3. Create your own KV namespace (this is where your synced data is stored)
+
+```bash
+wrangler kv namespace create INVENTORY
+```
+This prints something like:
+```
+[[kv_namespaces]]
+binding = "INVENTORY"
+id = "a1b2c3d4e5f6..."
+```
+Copy that `id` value.
+
+### 4. Configure the project
+
+Open `wrangler.toml` in any text editor and replace `REPLACE_WITH_YOUR_KV_NAMESPACE_ID` with the `id` you
+just copied.
+
+### 5. Choose how you want the tracker to be reachable
+
+- **No personal domain? No problem.** Leave the `[[routes]]` block in `wrangler.toml` commented out.
+  Cloudflare automatically gives every Worker a free URL at
+  `https://<worker-name>.<your-subdomain>.workers.dev` (the `<your-subdomain>` part is a
+  Cloudflare-assigned account subdomain, visible in your Cloudflare dashboard under **Workers & Pages**
+  after your first deploy). This URL works exactly the same as a custom domain — nothing else to
+  configure.
+- **Have your own domain?** It must already be added to your Cloudflare account (Cloudflare's
+  [Add a Site](https://developers.cloudflare.com/fundamentals/manage-domains/add-site/) docs cover this).
+  Then uncomment the `[[routes]]` block in `wrangler.toml` and set `pattern` to your domain instead.
+
+### 6. Deploy
+
+```bash
+wrangler deploy
+```
+Wrangler prints your deployed URL when it finishes (either your `*.workers.dev` URL or your custom
+domain). Open it — the bookmarklet shown in the **Sync Data** panel automatically points at whichever
+origin is serving it, so no code changes are needed either way.
 
 To preview locally before deploying:
 ```bash
