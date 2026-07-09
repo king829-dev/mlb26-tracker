@@ -1,0 +1,17 @@
+name = "mlb26-tracker"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+
+# Uncomment and set this to your own custom domain if you have one.
+# Otherwise the worker will be available at <name>.<your-subdomain>.workers.dev
+# [[routes]]
+# pattern = "your-domain.com"
+# custom_domain = true
+
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+
+[[kv_namespaces]]
+binding = "INVENTORY"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
