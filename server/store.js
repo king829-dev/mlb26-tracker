@@ -3,7 +3,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 
-const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
+export const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
 
 function fileFor(key) {
   // Keys are always one of a small set of static base names, optionally suffixed

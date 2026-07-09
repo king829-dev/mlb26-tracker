@@ -6,12 +6,14 @@ WORKDIR /app
 COPY . /repo
 WORKDIR /repo/server
 
-RUN npm install --omit=dev
+RUN apk add --no-cache openssl && npm install --omit=dev && chmod +x entrypoint.sh
 
 ENV PORT=8787
+ENV HTTPS_PORT=8443
 ENV DATA_DIR=/data
 VOLUME ["/data"]
 
 EXPOSE 8787
+EXPOSE 8443
 
-CMD ["node", "server.js"]
+CMD ["./entrypoint.sh"]

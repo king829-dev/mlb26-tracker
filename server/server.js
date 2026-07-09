@@ -3,9 +3,10 @@
 // Implements the exact same routes and behavior — see worker/src/index.js for the
 // Cloudflare version of this same server.
 import express from 'express';
+import https from 'https';
 import { fileURLToPath } from 'url';
 import path from 'path';
-import { promises as fsp } from 'fs';
+import fs, { promises as fsp } from 'fs';
 import { SYNC_SCRIPT } from '../shared/sync-script.js';
 import * as store from './store.js';
 
@@ -13,6 +14,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const APP_HTML_PATH = path.join(__dirname, '..', 'worker', 'src', 'app.html');
 
 const PORT = process.env.PORT || 8787;
+const HTTPS_PORT = process.env.HTTPS_PORT || 8443;
+const CERT_FILE = path.join(store.DATA_DIR, 'certs', 'cert.pem');
+const KEY_FILE = path.join(store.DATA_DIR, 'certs', 'key.pem');
 
 // Multi-tenant support: each browser/user gets an opaque uid (generated client-side).
 // Requests with no uid fall back to the original unscoped keys (the primary/legacy user).
@@ -117,5 +121,21 @@ app.get('/:friendlyUid', async (req, res, next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`MLB26 tracker (self-hosted) listening on port ${PORT}`);
+  console.log(`MLB26 tracker (self-hosted) listening on port ${PORT} (HTTP)`);
 });
+
+// Optional HTTPS listener using a self-signed cert (see entrypoint.sh, which generates
+// one automatically in Docker). Browsers block syncing from an HTTPS page (like the MLB
+// site) to a plain-HTTP endpoint ("mixed content"), so HTTPS is needed here for the
+// bookmarklet to actually work — visit the tracker via this port to get a bookmarklet
+// that self-points to HTTPS.
+if (fs.existsSync(CERT_FILE) && fs.existsSync(KEY_FILE)) {
+  https.createServer({
+    cert: fs.readFileSync(CERT_FILE),
+    key: fs.readFileSync(KEY_FILE),
+  }, app).listen(HTTPS_PORT, () => {
+    console.log(`MLB26 tracker (self-hosted) listening on port ${HTTPS_PORT} (HTTPS, self-signed)`);
+  });
+} else {
+  console.log(`No TLS cert found at ${CERT_FILE} — HTTPS not started.`);
+}

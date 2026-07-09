@@ -124,8 +124,18 @@ cd mlb26-tracker
 docker compose up --build -d
 ```
 
-Open `http://<the machine's IP or hostname>:8787` — that's your tracker, same app as Option A. Data is
-stored in a Docker named volume (`mlb26-data`), so it persists across container restarts/rebuilds.
+The container serves both plain HTTP (`8787`) and HTTPS (`8443`, self-signed cert generated automatically
+on first boot). **Use the HTTPS URL** — e.g. `https://<the machine's IP or hostname>:8443` — for anything
+that involves the bookmarklet. This matters because the bookmarklet is loaded from
+`mlb26.theshow.com`, which is HTTPS, and browsers block an HTTPS page from loading an HTTP script
+("mixed content") — so a plain-`http://` bookmarklet silently fails to sync. Since the cert is
+self-signed (not issued by a trusted authority), your browser will show a warning the first time you visit
+— click **Advanced → Proceed** to accept it. This is a one-time step per browser/device; after that,
+syncing works normally. (The plain HTTP port is still there if you just want to view the dashboard without
+dealing with the cert warning — only the sync path needs HTTPS.)
+
+Data — and the generated cert — are stored in a Docker named volume (`mlb26-data`), so both persist across
+container restarts/rebuilds (meaning you won't have to re-accept the cert warning after every restart).
 
 To stop it:
 ```bash
@@ -134,12 +144,17 @@ docker compose down
 (Your data isn't deleted — it's in the named volume, not the container. `docker compose up` again to resume.)
 
 Everything else — installing the bookmarklet, sharing with friends, friendly `/name` links — works exactly
-the same as Option A; just use your Docker host's URL (e.g. `http://raspberrypi.local:8787`) wherever the
-guide below says "your deployed tracker."
+the same as Option A; just use your Docker host's HTTPS URL (e.g. `https://raspberrypi.local:8443`)
+wherever the guide below says "your deployed tracker."
 
 > **Raspberry Pi note:** the Docker image (`node:20-alpine`) supports 64-bit ARM (`arm64`). Make sure your
 > Pi is running a 64-bit OS (most current Raspberry Pi OS installs are) — a 32-bit OS won't work with this
 > image.
+>
+> **Want a real (non-self-signed) certificate instead?** If you already have a domain and a Cloudflare
+> account, a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
+> pointed at this container gives you a trusted HTTPS URL with no browser warnings — see that project's docs
+> for adding `cloudflared` as an extra service in `docker-compose.yml`.
 
 ## How syncing works
 

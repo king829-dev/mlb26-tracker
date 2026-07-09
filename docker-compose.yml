@@ -5,6 +5,7 @@ services:
       dockerfile: server/Dockerfile
     ports:
       - "8787:8787"
+      - "8443:8443"
     volumes:
       - mlb26-data:/data
     restart: unless-stopped
