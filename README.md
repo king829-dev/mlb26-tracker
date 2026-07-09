@@ -112,6 +112,25 @@ To preview locally before deploying:
 wrangler dev
 ```
 
+### 7. Lock down your ingest endpoints (strongly recommended)
+
+By default, your tracker's write endpoints (`/ingest-programs`, `/ingest-general-programs`) accept requests
+from anyone who finds your URL — there's no login system here, just a link. Setting a secret key closes
+that off: only requests carrying a matching key (which your own served sync script includes automatically)
+are accepted.
+
+```bash
+wrangler secret put SYNC_KEY
+```
+When prompted, paste any random string — e.g. the output of `openssl rand -hex 32` (macOS/Linux) — then
+redeploy with `wrangler deploy`. Nothing else changes for you or anyone syncing through your deployed URL;
+this only rejects direct requests to those two endpoints from anyone who hasn't loaded your sync script
+first.
+
+There's also a built-in rate limit (20 writes per source IP per 10 minutes) on those same endpoints,
+active regardless of whether you set a `SYNC_KEY` — this protects your free-tier Cloudflare KV write quota
+from being exhausted by a flood of requests.
+
 ## Option B: Self-hosted (Docker)
 
 Already have somewhere to run Docker — a PC, NAS, or Raspberry Pi (64-bit OS)? This runs the identical
@@ -121,8 +140,17 @@ a local file for storage instead of Cloudflare KV.
 ```bash
 git clone https://github.com/king829-dev/mlb26-tracker.git
 cd mlb26-tracker
+```
+
+Strongly recommended before your first run: set a secret key to lock down the write endpoints (otherwise
+anyone who finds your URL can write to it — see **Lock down your ingest endpoints** above, same idea here).
+```bash
+export SYNC_KEY=$(openssl rand -hex 32)
 docker compose up --build -d
 ```
+(There's also a built-in rate limit of 20 writes per source IP per 10 minutes on those endpoints regardless
+of whether `SYNC_KEY` is set.) If you skip this, the tracker still runs fine — you'll just be running it
+unauthenticated, same as not setting `SYNC_KEY` on the Cloudflare option.
 
 The container serves both plain HTTP (`8787`) and HTTPS (`8443`, self-signed cert generated automatically
 on first boot). **Use the HTTPS URL** — e.g. `https://<the machine's IP or hostname>:8443` — for anything
@@ -147,7 +175,7 @@ Everything else — installing the bookmarklet, sharing with friends, friendly `
 the same as Option A; just use your Docker host's HTTPS URL (e.g. `https://raspberrypi.local:8443`)
 wherever the guide below says "your deployed tracker."
 
-> **Raspberry Pi note:** the Docker image (`node:20-alpine`) supports 64-bit ARM (`arm64`). Make sure your
+> **Raspberry Pi note:** the Docker image (`node:22-alpine`) supports 64-bit ARM (`arm64`). Make sure your
 > Pi is running a 64-bit OS (most current Raspberry Pi OS installs are) — a 32-bit OS won't work with this
 > image.
 >
@@ -155,6 +183,10 @@ wherever the guide below says "your deployed tracker."
 > account, a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
 > pointed at this container gives you a trusted HTTPS URL with no browser warnings — see that project's docs
 > for adding `cloudflared` as an extra service in `docker-compose.yml`.
+>
+> **Deploying via Portainer instead of the CLI?** Set `SYNC_KEY` under the stack's **Environment variables**
+> section in the Portainer UI rather than `export`ing it in a shell, since Portainer doesn't inherit your
+> terminal's environment.
 
 ## How syncing works
 

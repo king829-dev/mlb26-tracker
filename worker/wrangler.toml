@@ -15,3 +15,9 @@ globs = ["**/*.html"]
 [[kv_namespaces]]
 binding = "INVENTORY"
 id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+
+# Strongly recommended: protects your ingest endpoints from being written to by anyone who
+# didn't get the sync script from your own deployment. Set this AFTER your first deploy:
+#   wrangler secret put SYNC_KEY
+# (paste any random string when prompted, e.g. output of `openssl rand -hex 32`)
+# then redeploy. Secrets aren't set via this file — see Cloudflare's docs on `wrangler secret`.

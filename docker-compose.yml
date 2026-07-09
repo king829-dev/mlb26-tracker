@@ -9,6 +9,11 @@ services:
     volumes:
       - mlb26-data:/data
     restart: unless-stopped
+    environment:
+      # Strongly recommended: protects your ingest endpoints from being written to by anyone
+      # who didn't get the sync script from your own deployment. Set this to any random string
+      # (e.g. output of `openssl rand -hex 32`) before your first `docker compose up`.
+      - SYNC_KEY=${SYNC_KEY:-}
 
 volumes:
   mlb26-data:

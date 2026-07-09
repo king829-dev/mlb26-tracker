@@ -20,6 +20,30 @@ function kvKey(base, uid) {
   return uid ? `${base}_${uid}` : base;
 }
 
+// Writes are rate-limited per source IP to prevent a flood of requests from burning through
+// the (limited, free-tier) daily KV write quota. Not configurable per-deployment beyond these
+// constants — edit here and redeploy if you need a different limit.
+const RATE_LIMIT_MAX = 20;
+const RATE_LIMIT_WINDOW_SECONDS = 600; // 10 minutes
+async function checkRateLimit(env, ip) {
+  const key = `ratelimit_${ip}`;
+  const raw = await env.INVENTORY.get(key);
+  const count = raw ? parseInt(raw, 10) : 0;
+  if (count >= RATE_LIMIT_MAX) return false;
+  await env.INVENTORY.put(key, String(count + 1), { expirationTtl: RATE_LIMIT_WINDOW_SECONDS });
+  return true;
+}
+
+// If a SYNC_KEY secret is configured (`wrangler secret put SYNC_KEY`), writes must include a
+// matching X-Sync-Key header — the served /sync.js script embeds this automatically, so this
+// is invisible to legitimate users but rejects requests sent directly to the endpoint by
+// anyone who hasn't first loaded the sync script from this deployment. If no SYNC_KEY secret
+// is set, this check is skipped (unauthenticated, matching this project's original behavior).
+function checkSyncKey(request, env) {
+  if (!env.SYNC_KEY) return true;
+  return request.headers.get('X-Sync-Key') === env.SYNC_KEY;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -27,6 +51,16 @@ export default {
 
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: CORS });
+    }
+
+    if (request.method === 'POST' && (url.pathname === '/ingest-programs' || url.pathname === '/ingest-general-programs')) {
+      if (!checkSyncKey(request, env)) {
+        return Response.json({ error: 'Invalid or missing sync key' }, { status: 401, headers: CORS });
+      }
+      const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+      if (!(await checkRateLimit(env, ip))) {
+        return Response.json({ error: 'Rate limit exceeded — try again later' }, { status: 429, headers: CORS });
+      }
     }
 
     // POST /ingest-programs — receive program progress scraped from theshow.com
@@ -86,7 +120,7 @@ export default {
 
     // GET /sync.js — the sync script, loaded by the bookmarklet via <script src>
     if (url.pathname === '/sync.js') {
-      const script = SYNC_SCRIPT.replace('__ORIGIN__', url.origin).replace('__UID__', uid || '');
+      const script = SYNC_SCRIPT.replace('__ORIGIN__', url.origin).replace('__UID__', uid || '').replace('__KEY__', env.SYNC_KEY || '');
       return new Response(script, { headers: { 'Content-Type': 'application/javascript; charset=utf-8', ...CORS } });
     }
 

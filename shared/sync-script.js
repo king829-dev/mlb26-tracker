@@ -1,10 +1,13 @@
 // Shared bookmarklet payload, served at /sync.js by both deployment targets
 // (the Cloudflare Worker in worker/ and the self-hosted Docker server in server/).
-// __ORIGIN__ and __UID__ are substituted per-request by whichever server is serving it.
+// __ORIGIN__, __UID__, and __KEY__ are substituted per-request by whichever server is serving it.
+// __KEY__ is the deployer's own SYNC_KEY secret (if configured) — sent back on writes so the
+// ingest endpoints can reject requests that didn't come from this served script.
 // Runs entirely via same-origin fetch()+DOMParser from a theshow.com tab — no extension needed.
 const SYNC_SCRIPT = `(async function() {
   var INGEST_ORIGIN = '__ORIGIN__';
   var UID = '__UID__';
+  var SYNC_KEY = '__KEY__';
   var UID_QS = UID ? ('?uid=' + encodeURIComponent(UID)) : '';
   var BATCH = 4;
 
@@ -224,7 +227,7 @@ const SYNC_SCRIPT = `(async function() {
     log('Saving...');
     await fetch(INGEST_ORIGIN + '/ingest-programs' + UID_QS, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Sync-Key': SYNC_KEY },
       body: JSON.stringify({ teams: allTeams, savedAt: new Date().toISOString() })
     });
 
@@ -236,7 +239,7 @@ const SYNC_SCRIPT = `(async function() {
       log('Saving...');
       await fetch(INGEST_ORIGIN + '/ingest-general-programs' + UID_QS, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Sync-Key': SYNC_KEY },
         body: JSON.stringify({ programs: generalPrograms, savedAt: new Date().toISOString() })
       });
     }

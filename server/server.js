@@ -29,17 +29,58 @@ function kvKey(base, uid) {
   return uid ? `${base}_${uid}` : base;
 }
 
+// Writes are rate-limited per source IP to prevent a flood of requests from filling up disk /
+// hammering the process. In-memory only (resets on restart) — fine for a single self-hosted
+// instance. Edit these constants and rebuild if you need a different limit.
+const RATE_LIMIT_MAX = 20;
+const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+const rateLimitMap = new Map();
+function checkRateLimit(ip) {
+  const now = Date.now();
+  const entry = rateLimitMap.get(ip);
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return true;
+  }
+  if (entry.count >= RATE_LIMIT_MAX) return false;
+  entry.count += 1;
+  return true;
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of rateLimitMap) {
+    if (now > entry.resetAt) rateLimitMap.delete(ip);
+  }
+}, RATE_LIMIT_WINDOW_MS).unref();
+
+// If SYNC_KEY is set in the environment, writes must include a matching X-Sync-Key header —
+// the served /sync.js script embeds this automatically, so this is invisible to legitimate
+// users but rejects requests sent directly to the endpoint by anyone who hasn't first loaded
+// the sync script from this deployment. If SYNC_KEY isn't set, this check is skipped.
+function checkSyncKey(req) {
+  if (!process.env.SYNC_KEY) return true;
+  return req.get('X-Sync-Key') === process.env.SYNC_KEY;
+}
+
 const app = express();
+app.set('trust proxy', true); // so req.ip reflects X-Forwarded-For when behind a reverse proxy/tunnel
 app.use(express.json({ limit: '10mb' }));
 
 app.use((req, res, next) => {
   res.set({
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Sync-Key',
     'Cache-Control': 'no-store',
   });
   if (req.method === 'OPTIONS') return res.status(204).end();
+  next();
+});
+
+app.use((req, res, next) => {
+  if (req.method !== 'POST' || (req.path !== '/ingest-programs' && req.path !== '/ingest-general-programs')) return next();
+  if (!checkSyncKey(req)) return res.status(401).json({ error: 'Invalid or missing sync key' });
+  if (!checkRateLimit(req.ip)) return res.status(429).json({ error: 'Rate limit exceeded — try again later' });
   next();
 });
 
@@ -103,7 +144,7 @@ app.get('/general-programs-data', async (req, res) => {
 app.get('/sync.js', (req, res) => {
   const uid = sanitizeUid(req.query.uid);
   const origin = `${req.protocol}://${req.get('host')}`;
-  const script = SYNC_SCRIPT.replace('__ORIGIN__', origin).replace('__UID__', uid || '');
+  const script = SYNC_SCRIPT.replace('__ORIGIN__', origin).replace('__UID__', uid || '').replace('__KEY__', process.env.SYNC_KEY || '');
   res.type('application/javascript; charset=utf-8').send(script);
 });
 
