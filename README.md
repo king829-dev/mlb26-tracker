@@ -119,6 +119,14 @@ wrangler dev
   from the tracker's Sync Data panel straight onto the bar.
 - **Windows (alternate):** right-click the bookmarks bar → *Add page*, name it "Sync MLB26", and paste the
   copied bookmarklet code into the URL field.
+- **iOS (Chrome or Safari):** iOS won't let you type or drag a `javascript:` link directly into a new
+  bookmark. There are two ways around this:
+  - **Set it up on iOS directly:** bookmark any page first (☆ icon), then edit that bookmark and replace
+    its saved URL with the copied bookmarklet code.
+  - **Use a bookmark synced from another device (easier):** if you already created the bookmarklet on a
+    Mac/Windows Chrome and are signed into the same Google account on Chrome for iOS, that bookmark syncs
+    over automatically — just tap it from your iOS bookmarks list. No need to recreate it on the device
+    itself.
 
 ## Sharing with friends (no Cloudflare account needed for them)
 
