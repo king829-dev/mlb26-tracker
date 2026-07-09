@@ -62,6 +62,30 @@ function checkSyncKey(req) {
   return req.get('X-Sync-Key') === process.env.SYNC_KEY;
 }
 
+// If BASIC_AUTH_USER + BASIC_AUTH_PASS are set in the environment, the dashboard page and the
+// data-read endpoints require an HTTP Basic Auth login (the browser shows its native
+// username/password prompt). Separate from SYNC_KEY: SYNC_KEY protects writes and is
+// invisible/automatic via the sync script; Basic Auth protects reads and requires a person to
+// type credentials, so it deliberately does NOT apply to /sync.js (loaded silently as a
+// <script src> by the bookmarklet, which can't supply a password) or the ingest endpoints
+// (already covered by SYNC_KEY). If the env vars aren't set, this check is skipped entirely.
+function checkBasicAuth(req) {
+  if (!process.env.BASIC_AUTH_USER || !process.env.BASIC_AUTH_PASS) return true;
+  const header = req.get('Authorization') || '';
+  if (!header.startsWith('Basic ')) return false;
+  let decoded;
+  try {
+    decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
+  } catch (e) {
+    return false;
+  }
+  const idx = decoded.indexOf(':');
+  if (idx === -1) return false;
+  return decoded.slice(0, idx) === process.env.BASIC_AUTH_USER && decoded.slice(idx + 1) === process.env.BASIC_AUTH_PASS;
+}
+
+const BASIC_AUTH_EXEMPT_PATHS = new Set(['/sync.js', '/ingest-programs', '/ingest-general-programs']);
+
 const app = express();
 app.set('trust proxy', true); // so req.ip reflects X-Forwarded-For when behind a reverse proxy/tunnel
 app.use(express.json({ limit: '10mb' }));
@@ -82,6 +106,13 @@ app.use((req, res, next) => {
   if (!checkSyncKey(req)) return res.status(401).json({ error: 'Invalid or missing sync key' });
   if (!checkRateLimit(req.ip)) return res.status(429).json({ error: 'Rate limit exceeded — try again later' });
   next();
+});
+
+app.use((req, res, next) => {
+  if (BASIC_AUTH_EXEMPT_PATHS.has(req.path)) return next();
+  if (checkBasicAuth(req)) return next();
+  res.set('WWW-Authenticate', 'Basic realm="MLB26 Tracker"');
+  res.status(401).send('Authentication required');
 });
 
 app.post('/ingest-programs', async (req, res) => {

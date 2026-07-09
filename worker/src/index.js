@@ -4,7 +4,7 @@ import { SYNC_SCRIPT } from '../../shared/sync-script.js';
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': 'Content-Type, X-Sync-Key',
   'Cache-Control': 'no-store',
 };
 
@@ -44,6 +44,34 @@ function checkSyncKey(request, env) {
   return request.headers.get('X-Sync-Key') === env.SYNC_KEY;
 }
 
+// If BASIC_AUTH_USER + BASIC_AUTH_PASS secrets are configured, the dashboard page and the
+// data-read endpoints require an HTTP Basic Auth login (the browser shows its native
+// username/password prompt). This is separate from SYNC_KEY: SYNC_KEY protects writes and is
+// invisible/automatic via the sync script; Basic Auth protects reads and requires a person to
+// type credentials, so it deliberately does NOT apply to /sync.js (loaded silently as a
+// <script src> by the bookmarklet, which can't supply a password) or the ingest endpoints
+// (already covered by SYNC_KEY). If the secrets aren't set, this check is skipped entirely.
+function checkBasicAuth(request, env) {
+  if (!env.BASIC_AUTH_USER || !env.BASIC_AUTH_PASS) return true;
+  const header = request.headers.get('Authorization') || '';
+  if (!header.startsWith('Basic ')) return false;
+  let decoded;
+  try {
+    decoded = atob(header.slice(6));
+  } catch (e) {
+    return false;
+  }
+  const idx = decoded.indexOf(':');
+  if (idx === -1) return false;
+  return decoded.slice(0, idx) === env.BASIC_AUTH_USER && decoded.slice(idx + 1) === env.BASIC_AUTH_PASS;
+}
+function unauthorizedResponse() {
+  return new Response('Authentication required', {
+    status: 401,
+    headers: { 'WWW-Authenticate': 'Basic realm="MLB26 Tracker"', ...CORS },
+  });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -51,6 +79,11 @@ export default {
 
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: CORS });
+    }
+
+    const BASIC_AUTH_EXEMPT_PATHS = ['/sync.js', '/ingest-programs', '/ingest-general-programs'];
+    if (!BASIC_AUTH_EXEMPT_PATHS.includes(url.pathname) && !checkBasicAuth(request, env)) {
+      return unauthorizedResponse();
     }
 
     if (request.method === 'POST' && (url.pathname === '/ingest-programs' || url.pathname === '/ingest-general-programs')) {

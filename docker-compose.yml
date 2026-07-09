@@ -14,6 +14,11 @@ services:
       # who didn't get the sync script from your own deployment. Set this to any random string
       # (e.g. output of `openssl rand -hex 32`) before your first `docker compose up`.
       - SYNC_KEY=${SYNC_KEY:-}
+      # Optional: password-protects the dashboard and read endpoints via HTTP Basic Auth.
+      # Leave both blank to keep the tracker open to anyone with the link (read-only; writes
+      # are still gated by SYNC_KEY above).
+      - BASIC_AUTH_USER=${BASIC_AUTH_USER:-}
+      - BASIC_AUTH_PASS=${BASIC_AUTH_PASS:-}
 
 volumes:
   mlb26-data:

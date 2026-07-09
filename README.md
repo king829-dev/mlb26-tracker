@@ -131,6 +131,24 @@ There's also a built-in rate limit (20 writes per source IP per 10 minutes) on t
 active regardless of whether you set a `SYNC_KEY` — this protects your free-tier Cloudflare KV write quota
 from being exhausted by a flood of requests.
 
+### 8. Password-protect your dashboard and data (optional)
+
+`SYNC_KEY` (above) only protects *writes*. By default, anyone who has (or guesses) your tracker's URL can
+still *view* your synced progress data — there's no login. If you'd rather require a username/password to
+view the dashboard, set these two secrets:
+
+```bash
+wrangler secret put BASIC_AUTH_USER
+wrangler secret put BASIC_AUTH_PASS
+```
+Redeploy (`wrangler deploy`) and your browser will prompt for that username/password the next time you (or
+anyone) opens the tracker URL — a standard browser login popup, no code changes needed. This does **not**
+apply to the bookmarklet/sync process itself (which can't type a password into a prompt) — syncing keeps
+working exactly as before, protected separately by `SYNC_KEY`.
+
+If you skip this, the tracker works exactly as it does today — this step only matters if you want to keep
+your progress data private from anyone who has the link.
+
 ## Option B: Self-hosted (Docker)
 
 Already have somewhere to run Docker — a PC, NAS, or Raspberry Pi (64-bit OS)? This runs the identical
@@ -151,6 +169,18 @@ docker compose up --build -d
 (There's also a built-in rate limit of 20 writes per source IP per 10 minutes on those endpoints regardless
 of whether `SYNC_KEY` is set.) If you skip this, the tracker still runs fine — you'll just be running it
 unauthenticated, same as not setting `SYNC_KEY` on the Cloudflare option.
+
+Also optional: password-protect the dashboard and data (not just writes) with HTTP Basic Auth — your
+browser will prompt for a username/password the first time you open the tracker URL. This is separate from
+`SYNC_KEY` and doesn't affect the bookmarklet/sync process at all.
+```bash
+export BASIC_AUTH_USER=yourname
+export BASIC_AUTH_PASS=$(openssl rand -hex 16)
+docker compose up --build -d
+```
+(If you're setting `SYNC_KEY` too, export both before running `docker compose up`.) Skip this if you don't
+mind anyone with the link being able to view your synced progress data — write access is still gated by
+`SYNC_KEY` either way.
 
 The container serves both plain HTTP (`8787`) and HTTPS (`8443`, self-signed cert generated automatically
 on first boot). **Use the HTTPS URL** — e.g. `https://<the machine's IP or hostname>:8443` — for anything
