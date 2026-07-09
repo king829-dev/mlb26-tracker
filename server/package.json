@@ -1,0 +1,14 @@
+{
+  "name": "mlb26-tracker-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Self-hosted (Docker) alternative to the Cloudflare Worker deployment.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

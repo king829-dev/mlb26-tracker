@@ -13,14 +13,25 @@ account.
 ```
 mlb26-tracker/
 ├── README.md
-└── worker/             # Cloudflare Worker
-    ├── wrangler.toml    # Deployment config + KV binding
-    └── src/
-        ├── index.js     # Worker entry point (routes: /ingest-programs, /programs-data, /sync.js, /)
-        └── app.html     # Tracker React app (self-contained SPA, includes bookmarklet setup instructions)
+├── shared/
+│   └── sync-script.js  # Bookmarklet scraping logic, shared by both deployment options below
+├── worker/              # Option A: Cloudflare Worker deployment
+│   ├── wrangler.toml    # Deployment config + KV binding
+│   └── src/
+│       ├── index.js     # Worker entry point (routes: /ingest-programs, /programs-data, /sync.js, /)
+│       └── app.html     # Tracker React app (self-contained SPA, includes bookmarklet setup instructions)
+├── server/              # Option B: self-hosted (Docker) deployment
+│   ├── server.js        # Express server, same routes as the Worker, file-based storage instead of KV
+│   ├── store.js
+│   └── Dockerfile
+└── docker-compose.yml
 ```
 
-## Setup
+Pick **one** of the two options below — they're independent, equally-supported ways to run the exact same
+tracker app. Cloudflare requires no server of your own but does require a (free) Cloudflare account.
+Docker requires a machine to run it on (a spare PC, NAS, or Raspberry Pi) but no third-party account at all.
+
+## Option A: Cloudflare Worker (no server of your own needed)
 
 This assumes no prior setup — if you already have some of these tools installed, skip ahead.
 
@@ -100,6 +111,35 @@ To preview locally before deploying:
 ```bash
 wrangler dev
 ```
+
+## Option B: Self-hosted (Docker)
+
+Already have somewhere to run Docker — a PC, NAS, or Raspberry Pi (64-bit OS)? This runs the identical
+tracker app with no Cloudflare account, using [Docker Compose](https://docs.docker.com/compose/install/) and
+a local file for storage instead of Cloudflare KV.
+
+```bash
+git clone https://github.com/king829-dev/mlb26-tracker.git
+cd mlb26-tracker
+docker compose up --build -d
+```
+
+Open `http://<the machine's IP or hostname>:8787` — that's your tracker, same app as Option A. Data is
+stored in a Docker named volume (`mlb26-data`), so it persists across container restarts/rebuilds.
+
+To stop it:
+```bash
+docker compose down
+```
+(Your data isn't deleted — it's in the named volume, not the container. `docker compose up` again to resume.)
+
+Everything else — installing the bookmarklet, sharing with friends, friendly `/name` links — works exactly
+the same as Option A; just use your Docker host's URL (e.g. `http://raspberrypi.local:8787`) wherever the
+guide below says "your deployed tracker."
+
+> **Raspberry Pi note:** the Docker image (`node:20-alpine`) supports 64-bit ARM (`arm64`). Make sure your
+> Pi is running a 64-bit OS (most current Raspberry Pi OS installs are) — a 32-bit OS won't work with this
+> image.
 
 ## How syncing works
 

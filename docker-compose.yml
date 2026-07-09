@@ -1,0 +1,13 @@
+services:
+  mlb26-tracker:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    ports:
+      - "8787:8787"
+    volumes:
+      - mlb26-data:/data
+    restart: unless-stopped
+
+volumes:
+  mlb26-data:
