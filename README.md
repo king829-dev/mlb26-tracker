@@ -155,8 +155,11 @@ Already have somewhere to run Docker — a PC, NAS, or Raspberry Pi (64-bit OS)?
 tracker app with no Cloudflare account, using [Docker Compose](https://docs.docker.com/compose/install/) and
 a local file for storage instead of Cloudflare KV.
 
+> The Docker option is stable as of the `v1.0` tag. `main` is now under active development for the
+> Cloudflare option, so clone the tag rather than `main` to get the version this guide describes.
+
 ```bash
-git clone https://github.com/king829-dev/mlb26-tracker.git
+git clone --branch v1.0 https://github.com/king829-dev/mlb26-tracker.git
 cd mlb26-tracker
 ```
 
