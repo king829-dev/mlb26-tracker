@@ -240,6 +240,69 @@ function isStale(iso, days) {
   try { return (Date.now() - new Date(iso).getTime()) > days * 24 * 60 * 60 * 1000; } catch(e) { return false; }
 }
 
+// ─── History / pace helpers (Stage 3) ──────────────────────────────────────────
+// `history` is the array from GET /history-data: [{ date, teams: {key: pct}, programs: {key: pct} }, ...]
+
+// Tiny inline sparkline — no chart library, just an SVG polyline on a fixed 0-100 scale.
+function Sparkline({ values, color, width, height }) {
+  width = width || 48; height = height || 14;
+  if (!values || values.length < 2) return null;
+  const step = width / (values.length - 1);
+  const points = values.map((v, i) => (i * step) + ',' + (height - (Math.max(0, Math.min(100, v)) / 100) * height)).join(' ');
+  return (
+    <svg width={width} height={height} style={{display:'block',flexShrink:0}}>
+      <polyline points={points} fill="none" stroke={color || 'var(--blue)'} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// Last `days` pct values for one team key, oldest→newest, skipping days with no data for that key.
+function teamHistorySeries(history, teamKey, days) {
+  if (!history || !teamKey) return [];
+  return history
+    .filter(e => e.teams && Object.prototype.hasOwnProperty.call(e.teams, teamKey))
+    .slice(-(days || 14))
+    .map(e => e.teams[teamKey]);
+}
+
+// Average pct-per-day delta over the last up to 7 gaps for one team key. Returns null if there
+// aren't at least 3 data points (per Stage 3 spec: hide projections/pace when too little history).
+function teamPaceDelta(history, teamKey) {
+  const entries = (history || []).filter(e => e.teams && Object.prototype.hasOwnProperty.call(e.teams, teamKey)).slice(-8);
+  if (entries.length < 3) return null;
+  const deltas = [];
+  for (let i = 1; i < entries.length; i++) deltas.push(entries[i].teams[teamKey] - entries[i - 1].teams[teamKey]);
+  return deltas.reduce((a, b) => a + b, 0) / deltas.length;
+}
+
+// Projected completion date for a team currently below 100%, via linear projection of its
+// recent daily pace. Null if pace is flat/negative or there's not enough history yet.
+function projectCompletion(history, teamKey, currentPct) {
+  if (currentPct >= 100) return null;
+  const avgDelta = teamPaceDelta(history, teamKey);
+  if (avgDelta === null || avgDelta <= 0) return null;
+  const daysLeft = Math.ceil((100 - currentPct) / avgDelta);
+  const date = new Date();
+  date.setDate(date.getDate() + daysLeft);
+  return { daysLeft, date };
+}
+
+// Overall pct/day pace across all teams with history, averaged day-over-day (last up to 7 gaps).
+function overallPaceDelta(history) {
+  const daily = (history || [])
+    .map(e => {
+      const vals = Object.values(e.teams || {});
+      if (!vals.length) return null;
+      return vals.reduce((a, b) => a + b, 0) / vals.length;
+    })
+    .filter(v => v !== null)
+    .slice(-8);
+  if (daily.length < 3) return null;
+  const deltas = [];
+  for (let i = 1; i < daily.length; i++) deltas.push(daily[i] - daily[i - 1]);
+  return deltas.reduce((a, b) => a + b, 0) / deltas.length;
+}
+
 // ─── Multi-user (uid) helpers ──────────────────────────────────────────────────
 // Each browser gets an opaque uid so multiple people can share one deployment
 // without their synced data colliding. No uid = legacy/primary user (unscoped KV keys).
@@ -284,6 +347,7 @@ function App() {
   const [programsPrev, setProgramsPrev] = useState(null);
   const [programsLoading, setProgramsLoading] = useState(false);
   const [generalPrograms, setGeneralPrograms] = useState(null);
+  const [history, setHistory] = useState([]);
 
   const showToast = (msg) => {
     setToast(msg);
@@ -299,7 +363,7 @@ function App() {
     showToast('Tracker created — install the new bookmarklet below');
   }
 
-  useEffect(() => { loadPrograms(); loadGeneralPrograms(); loadProgramsPrev(); }, [uid]);
+  useEffect(() => { loadPrograms(); loadGeneralPrograms(); loadProgramsPrev(); loadHistory(); }, [uid]);
 
   // While the tab is visible, poll for a newer synced snapshot (e.g. after running the sync
   // bookmarklet on a different device/tab) and reload automatically when savedAt changes.
@@ -345,6 +409,15 @@ function App() {
     } catch(e) {}
   }
 
+  async function loadHistory() {
+    try {
+      const resp = await fetch('/history-data' + uidQs(uid), { cache: 'no-store' });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      setHistory(Array.isArray(data.history) ? data.history : []);
+    } catch(e) {}
+  }
+
   // Build a pct map from a programs snapshot: abbr → {main pct, fan pct}
   function buildPctMap(snapshot, byAbbr) {
     if (!snapshot?.teams) return {};
@@ -369,6 +442,21 @@ function App() {
         t.teamName === `${team.city} ${team.name}` || t.teamName.includes(team.name)
       );
       if (match) result[match.abbr] = t;
+    });
+    return result;
+  }, [programs]);
+
+  // abbr → raw history/teams key (e.g. "al_1") — history entries are keyed the same way the
+  // Worker stores them, so this is needed to look a team's abbr up in the history array.
+  const historyKeyByAbbr = useMemo(() => {
+    if (!programs?.teams) return {};
+    const result = {};
+    Object.entries(programs.teams).forEach(([key, t]) => {
+      if (!t.teamName) return;
+      const match = TEAMS.find(team =>
+        t.teamName === `${team.city} ${team.name}` || t.teamName.includes(team.name)
+      );
+      if (match) result[match.abbr] = key;
     });
     return result;
   }, [programs]);
@@ -450,7 +538,7 @@ function App() {
 
       {/* Main */}
       <div className="main">
-        {view === 'overview' && <OverviewPanel setView={setView} programs={programs} programsByAbbr={programsByAbbr} programsPrev={programsPrev} buildPctMap={buildPctMap} />}
+        {view === 'overview' && <OverviewPanel setView={setView} programs={programs} programsByAbbr={programsByAbbr} programsPrev={programsPrev} buildPctMap={buildPctMap} history={history} historyKeyByAbbr={historyKeyByAbbr} />}
         {view === 'howto' && <HowToPanel uid={uid} onCreateTracker={handleCreateTracker} />}
         {view === 'programs' && <ProgramsPanel programs={programs} loading={programsLoading} onReload={loadPrograms} />}
         {view === 'general-programs' && <GeneralProgramsPanel generalPrograms={generalPrograms} onReload={loadGeneralPrograms} />}
@@ -458,6 +546,8 @@ function App() {
           <TeamPanel
             team={currentTeam}
             programData={programsByAbbr[currentTeam.abbr]}
+            history={history}
+            historyKey={historyKeyByAbbr[currentTeam.abbr]}
           />
         )}
       </div>
@@ -743,7 +833,7 @@ function GeneralProgramsPanel({ generalPrograms, onReload }) {
 }
 
 // ─── Overview Panel ───────────────────────────────────────────────────────────
-function OverviewPanel({ setView, programs, programsByAbbr, programsPrev, buildPctMap }) {
+function OverviewPanel({ setView, programs, programsByAbbr, programsPrev, buildPctMap, history, historyKeyByAbbr }) {
   const progTeams = programs ? Object.values(programs.teams) : [];
   const seen = new Set();
   const uniqueProgTeams = progTeams.filter(t => {
@@ -833,6 +923,9 @@ function OverviewPanel({ setView, programs, programsByAbbr, programsPrev, buildP
   const ringColor = displayPct === 100 ? 'var(--green)' : displayPct >= 75 ? 'var(--gold)' : 'var(--blue)';
   const ringTextColor = displayPct === 100 ? 'var(--green)' : displayPct >= 75 ? 'var(--gold)' : 'var(--text)';
 
+  // Overall XP/day pace across all teams with history (Stage 3) — hidden if too little data.
+  const pace = useMemo(() => overallPaceDelta(history), [history]);
+
   return (
     <div>
       <div className="page-header">
@@ -840,6 +933,11 @@ function OverviewPanel({ setView, programs, programsByAbbr, programsPrev, buildP
         {programs && (
           <div style={{fontSize:'.72rem',color: isStale(programs.savedAt, 3) ? 'var(--gold)' : 'var(--muted)'}}>
             Last synced {formatRelative(programs.savedAt)} ({formatDate(programs.savedAt)})
+            {pace !== null && (
+              <span style={{marginLeft:8,color:'var(--muted)'}}>
+                · Pace: {pace > 0 ? '+' : ''}{pace.toFixed(1)}%/day
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -906,6 +1004,7 @@ function OverviewPanel({ setView, programs, programsByAbbr, programsPrev, buildP
           const isComplete = pct === 100;
           const isNear = pct >= 75 && !isComplete;
           const pctColor = isComplete ? 'var(--green)' : pct >= 75 ? 'var(--gold)' : pct > 0 ? 'var(--text)' : 'var(--muted)';
+          const sparkVals = teamHistorySeries(history, historyKeyByAbbr[team.abbr], 14);
           return (
             <div
               key={team.abbr}
@@ -939,6 +1038,11 @@ function OverviewPanel({ setView, programs, programsByAbbr, programsPrev, buildP
                     <div style={{height:'100%',width:fanPct+'%',background:'var(--purple)',borderRadius:1}} />
                   </div>
                   <div style={{fontSize:'.5rem',color:'var(--muted2)',flexShrink:0,fontFamily:"'Barlow Condensed',sans-serif"}}>#{fanPct}%</div>
+                </div>
+              )}
+              {sparkVals.length >= 2 && (
+                <div style={{marginTop:4}}>
+                  <Sparkline values={sparkVals} color={isComplete ? 'var(--green)' : team.color} width={100} height={16} />
                 </div>
               )}
             </div>
@@ -993,13 +1097,16 @@ function OverviewPanel({ setView, programs, programsByAbbr, programsPrev, buildP
 }
 
 // ─── Team Panel ───────────────────────────────────────────────────────────────
-function TeamPanel({ team, programData }) {
+function TeamPanel({ team, programData, history, historyKey }) {
   const mainProg = programData?.programs?.find(p => !p.name?.includes('#1 Fan'));
   const fanProg = programData?.programs?.find(p => p.name?.includes('#1 Fan'));
   const scrapedMissions = programData?.missions || [];
   const fanMissions = programData?.fanMissions || [];
   const pct = mainProg?.pct ?? 0;
   const isComplete = pct === 100;
+
+  const sparkVals = useMemo(() => teamHistorySeries(history, historyKey, 14), [history, historyKey]);
+  const projection = useMemo(() => projectCompletion(history, historyKey, pct), [history, historyKey, pct]);
 
   return (
     <div>
@@ -1009,6 +1116,7 @@ function TeamPanel({ team, programData }) {
           {team.city} {team.name}
         </div>
         <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+          {sparkVals.length >= 2 && <Sparkline values={sparkVals} color={team.color} width={70} height={20} />}
           {programData && (
             <div style={{fontSize:'.78rem',fontWeight:700,color: isComplete?'var(--green)':pct>=75?'var(--gold)':'var(--text)',background:'var(--s3)',padding:'4px 10px',borderRadius:5,border:'1px solid var(--border2)'}}>
               {isComplete ? '✓ Complete' : `${pct}% done`}
@@ -1016,6 +1124,12 @@ function TeamPanel({ team, programData }) {
           )}
         </div>
       </div>
+      {projection && (
+        <div style={{fontSize:'.72rem',color:'var(--muted)',marginTop:-8,marginBottom:16}}>
+          At recent pace, projected to finish Team Affinity in ~{projection.daysLeft} day{projection.daysLeft === 1 ? '' : 's'}
+          {' '}({formatDate(projection.date.toISOString())})
+        </div>
+      )}
 
       {/* Live program progress from theshow.com */}
       {programData ? (

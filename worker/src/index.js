@@ -31,6 +31,65 @@ function isPlainObject(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
+// ── Snapshot history (Stage 3) ──────────────────────────────────────────────
+// A rolling per-uid history of daily pct snapshots (teams + general programs), used by the
+// dashboard for sparklines and pace/projection. Deliberately pct-only (not full mission
+// detail) to keep the KV value small; capped at 60 entries (roughly 2 months of daily syncs).
+const HISTORY_CAP = 60;
+
+function teamMainPct(teamEntry) {
+  if (!teamEntry || !Array.isArray(teamEntry.programs)) return null;
+  const main = teamEntry.programs.find((p) => !(p.name || '').includes('#1 Fan'));
+  return main && typeof main.pct === 'number' ? main.pct : null;
+}
+
+function buildTeamsPctMap(teamsObj) {
+  const map = {};
+  Object.keys(teamsObj || {}).forEach((key) => {
+    const pct = teamMainPct(teamsObj[key]);
+    if (pct !== null) map[key] = pct;
+  });
+  return map;
+}
+
+function buildProgramsPctMap(programsObj) {
+  const map = {};
+  Object.keys(programsObj || {}).forEach((key) => {
+    const p = programsObj[key];
+    if (p && typeof p.pct === 'number') map[key] = p.pct;
+  });
+  return map;
+}
+
+// Upserts today's entry (by date, derived from the ingest's savedAt) in the uid's history
+// array, merging in whichever of teams/programs this call has fresh data for. Called once per
+// completed sync "phase" — the final team batch (or a non-partial team replace), and separately
+// the general-programs replace — so a single day's entry is built up across up to two calls.
+async function appendHistory(env, uid, dateStr, teamsPctMap, programsPctMap) {
+  const key = kvKey('history', uid);
+  let hist;
+  try {
+    const raw = await env.INVENTORY.get(key);
+    hist = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(hist)) hist = [];
+  } catch (e) {
+    hist = [];
+  }
+  // Look up by date anywhere in the array (not just the last entry) — a sync's two ingest calls
+  // (teams, then general programs) are expected to land on the same date, but relying solely on
+  // array-order would split them into duplicate entries if they ever arrive out of sequence.
+  let entry = hist.find((e) => e.date === dateStr);
+  if (!entry) {
+    entry = { date: dateStr, teams: {}, programs: {} };
+    hist.push(entry);
+    hist.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    if (hist.length > HISTORY_CAP) hist = hist.slice(hist.length - HISTORY_CAP);
+  }
+  entry.teams = Object.assign({}, entry.teams, teamsPctMap);
+  entry.programs = Object.assign({}, entry.programs, programsPctMap);
+  await env.INVENTORY.put(key, JSON.stringify(hist));
+}
+
 // Reads and validates a JSON request body: enforces the size cap (via Content-Length, checked
 // before parsing) and returns a tagged result so callers can map to the right HTTP status
 // without ever echoing internal error detail back to the client.
@@ -200,6 +259,13 @@ export default {
           doc.teams = { ...doc.teams, ...data.teams };
           doc.savedAt = data.savedAt || new Date().toISOString();
           await env.INVENTORY.put(kvKey('programs', uid), JSON.stringify(doc));
+          // A `summary` is only attached to the final batch of a run (see sync-script.js), so
+          // this is the point to record the day's snapshot — using the full cumulative doc.teams,
+          // not just this batch, so unchanged teams are represented too.
+          if (data.summary) {
+            const dateStr = (doc.savedAt || new Date().toISOString()).slice(0, 10);
+            await appendHistory(env, uid, dateStr, buildTeamsPctMap(doc.teams), {});
+          }
           return Response.json({ ok: true, count: Object.keys(data.teams).length, merged: true }, { headers: CORS });
         }
 
@@ -215,10 +281,12 @@ export default {
           }
           await env.INVENTORY.put(kvKey('programs_prev', uid), currentRaw);
         }
+        const savedAt = data.savedAt || new Date().toISOString();
         await env.INVENTORY.put(kvKey('programs', uid), JSON.stringify({
           teams: data.teams,
-          savedAt: data.savedAt || new Date().toISOString(),
+          savedAt,
         }));
+        await appendHistory(env, uid, savedAt.slice(0, 10), buildTeamsPctMap(data.teams), {});
         return Response.json({ ok: true, count: Object.keys(data.teams).length }, { headers: CORS });
       } catch (e) {
         console.error('ingest-programs failed:', e);
@@ -256,7 +324,11 @@ export default {
         return Response.json({ error: 'Refusing to save empty/invalid programs — likely scraped from the wrong tab' }, { status: 400, headers: CORS });
       }
       try {
-        await env.INVENTORY.put(kvKey('general_programs', uid), JSON.stringify({ programs: data.programs, savedAt: data.savedAt || new Date().toISOString() }));
+        const savedAt = data.savedAt || new Date().toISOString();
+        await env.INVENTORY.put(kvKey('general_programs', uid), JSON.stringify({ programs: data.programs, savedAt }));
+        // This endpoint is always called once at the end of every sync run (full replace), so
+        // it's a reliable second hook point for the day's history entry alongside the teams side.
+        await appendHistory(env, uid, savedAt.slice(0, 10), {}, buildProgramsPctMap(data.programs));
         return Response.json({ ok: true, count: Object.keys(data.programs).length }, { headers: CORS });
       } catch (e) {
         console.error('ingest-general-programs failed:', e);
@@ -270,6 +342,14 @@ export default {
       const raw = await env.INVENTORY.get(kvKey('general_programs', uid));
       if (!raw) return Response.json({ programs: {}, savedAt: null }, { headers: CORS });
       return new Response(raw, { headers: { 'Content-Type': 'application/json', ...CORS } });
+    }
+
+    // GET /history-data — serve the rolling pct-only snapshot history (Stage 3: sparklines,
+    // pace, projected completion). Dashboard-only, same-origin — no CORS needed.
+    if (url.pathname === '/history-data') {
+      const raw = await env.INVENTORY.get(kvKey('history', uid));
+      if (!raw) return Response.json({ history: [] }, { headers: NO_CORS });
+      return new Response(`{"history":${raw}}`, { headers: { 'Content-Type': 'application/json', ...NO_CORS } });
     }
 
     // GET /sync.js — the sync script, loaded by the bookmarklet via <script src>. No longer
