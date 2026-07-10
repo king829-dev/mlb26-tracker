@@ -222,6 +222,24 @@ function formatDate(iso) {
   } catch(e) { return ''; }
 }
 
+// Relative "Last synced X ago" text for the dashboard freshness indicator.
+function formatRelative(iso) {
+  if (!iso) return '';
+  try {
+    const ms = Date.now() - new Date(iso).getTime();
+    if (ms < 60000) return 'just now';
+    const min = Math.floor(ms / 60000);
+    if (min < 60) return min + 'm ago';
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return hr + 'h ago';
+    return Math.floor(hr / 24) + 'd ago';
+  } catch(e) { return ''; }
+}
+function isStale(iso, days) {
+  if (!iso) return false;
+  try { return (Date.now() - new Date(iso).getTime()) > days * 24 * 60 * 60 * 1000; } catch(e) { return false; }
+}
+
 // ─── Multi-user (uid) helpers ──────────────────────────────────────────────────
 // Each browser gets an opaque uid so multiple people can share one deployment
 // without their synced data colliding. No uid = legacy/primary user (unscoped KV keys).
@@ -282,6 +300,21 @@ function App() {
   }
 
   useEffect(() => { loadPrograms(); loadGeneralPrograms(); loadProgramsPrev(); }, [uid]);
+
+  // While the tab is visible, poll for a newer synced snapshot (e.g. after running the sync
+  // bookmarklet on a different device/tab) and reload automatically when savedAt changes.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      fetch('/programs-data' + uidQs(uid), { cache: 'no-store' })
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (data?.savedAt && data.savedAt !== programs?.savedAt) loadPrograms();
+        })
+        .catch(() => {});
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [uid, programs?.savedAt]);
 
   async function loadPrograms() {
     setProgramsLoading(true);
@@ -804,7 +837,11 @@ function OverviewPanel({ setView, programs, programsByAbbr, programsPrev, buildP
     <div>
       <div className="page-header">
         <div className="page-title">Program Overview</div>
-        {programs && <div style={{fontSize:'.72rem',color:'var(--muted)'}}>synced {formatDate(programs.savedAt)}</div>}
+        {programs && (
+          <div style={{fontSize:'.72rem',color: isStale(programs.savedAt, 3) ? 'var(--gold)' : 'var(--muted)'}}>
+            Last synced {formatRelative(programs.savedAt)} ({formatDate(programs.savedAt)})
+          </div>
+        )}
       </div>
 
       {/* Hero — big ring + key stats */}

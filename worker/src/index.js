@@ -154,6 +154,16 @@ export default {
     }
 
     // POST /ingest-programs — receive program progress scraped from theshow.com
+    //
+    // Two shapes:
+    // - Partial batch (`partial: true, syncId`): the sync script's normal mode. Each completed
+    //   scrape batch is posted as soon as it's ready so a mid-run network failure doesn't lose
+    //   already-scraped progress. The Worker merges the batch's teams into a per-run doc; on the
+    //   first batch of a new syncId, that doc is seeded from the previously-stored teams (rotated
+    //   into `programs_prev` first) so teams the client didn't re-scrape this run are preserved.
+    //   Exempt from the team-count health guard below since batches are small by design.
+    // - Full replace (no syncId): legacy/back-compat shape — one-shot full snapshot replace,
+    //   same as this endpoint always behaved before Stage 2.
     if (url.pathname === '/ingest-programs' && request.method === 'POST') {
       const parsed = await readJsonBody(request);
       if (parsed.error === 'payload_too_large') {
@@ -166,10 +176,38 @@ export default {
       if (!isPlainObject(data.teams) || Object.keys(data.teams).length === 0 || !Object.values(data.teams).every(isPlainObject)) {
         return Response.json({ error: 'Refusing to save empty/invalid teams — likely scraped from the wrong tab' }, { status: 400, headers: CORS });
       }
+      const isPartial = data.partial === true && typeof data.syncId === 'string' && data.syncId.length > 0;
+      const syncId = isPartial ? data.syncId.slice(0, 40) : null;
       try {
-        // Rotate current → prev before overwriting
-        const current = await env.INVENTORY.get(kvKey('programs', uid));
-        if (current) await env.INVENTORY.put(kvKey('programs_prev', uid), current);
+        const currentRaw = await env.INVENTORY.get(kvKey('programs', uid));
+        const current = currentRaw ? JSON.parse(currentRaw) : null;
+
+        if (isPartial) {
+          let doc;
+          if (current && current.syncId === syncId) {
+            doc = current;
+          } else {
+            if (currentRaw) await env.INVENTORY.put(kvKey('programs_prev', uid), currentRaw);
+            doc = { syncId, teams: current ? { ...current.teams } : {} };
+          }
+          doc.teams = { ...doc.teams, ...data.teams };
+          doc.savedAt = data.savedAt || new Date().toISOString();
+          await env.INVENTORY.put(kvKey('programs', uid), JSON.stringify(doc));
+          return Response.json({ ok: true, count: Object.keys(data.teams).length, merged: true }, { headers: CORS });
+        }
+
+        // Full replace: guard against a broken scrape (e.g. site layout changed) silently
+        // wiping out most of a healthy snapshot.
+        if (current) {
+          const storedCount = Object.keys(current.teams || {}).length;
+          const incomingCount = Object.keys(data.teams).length;
+          if (storedCount > 0 && incomingCount < storedCount * 0.5) {
+            return Response.json({
+              error: 'Refusing full sync — team count dropped more than 50% versus the saved snapshot. Site layout may have changed.',
+            }, { status: 409, headers: CORS });
+          }
+          await env.INVENTORY.put(kvKey('programs_prev', uid), currentRaw);
+        }
         await env.INVENTORY.put(kvKey('programs', uid), JSON.stringify({
           teams: data.teams,
           savedAt: data.savedAt || new Date().toISOString(),
@@ -181,11 +219,13 @@ export default {
       }
     }
 
-    // GET /programs-data — serve stored program progress to the app
+    // GET /programs-data — serve stored program progress. Needs CORS (not just same-origin):
+    // the sync script running on theshow.com fetches this directly to compare against the last
+    // saved snapshot before deciding which teams to rescan (incremental sync).
     if (url.pathname === '/programs-data') {
       const raw = await env.INVENTORY.get(kvKey('programs', uid));
-      if (!raw) return Response.json({ teams: {}, savedAt: null }, { headers: NO_CORS });
-      return new Response(raw, { headers: { 'Content-Type': 'application/json', ...NO_CORS } });
+      if (!raw) return Response.json({ teams: {}, savedAt: null }, { headers: CORS });
+      return new Response(raw, { headers: { 'Content-Type': 'application/json', ...CORS } });
     }
 
     // GET /programs-prev — serve previous snapshot for delta tracking
@@ -217,11 +257,12 @@ export default {
       }
     }
 
-    // GET /general-programs-data — serve stored general program data
+    // GET /general-programs-data — serve stored general program data. CORS (not same-origin
+    // only): the sync script fetches this cross-origin to skip re-scraping unchanged programs.
     if (url.pathname === '/general-programs-data') {
       const raw = await env.INVENTORY.get(kvKey('general_programs', uid));
-      if (!raw) return Response.json({ programs: {}, savedAt: null }, { headers: NO_CORS });
-      return new Response(raw, { headers: { 'Content-Type': 'application/json', ...NO_CORS } });
+      if (!raw) return Response.json({ programs: {}, savedAt: null }, { headers: CORS });
+      return new Response(raw, { headers: { 'Content-Type': 'application/json', ...CORS } });
     }
 
     // GET /sync.js — the sync script, loaded by the bookmarklet via <script src>. No longer
