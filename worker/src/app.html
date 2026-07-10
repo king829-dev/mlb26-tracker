@@ -145,13 +145,19 @@ body::before{content:'';position:fixed;inset:0;background:
   .sidebar{position:relative;height:auto}
   .hero-section{flex-direction:column;text-align:center}
   .div-rings{grid-template-columns:repeat(3,1fr)}
+  /* 44px minimum touch target for interactive elements on mobile (desktop density unchanged) */
+  .sidebar-btn{min-height:44px}
+  .team-tile{min-height:44px}
+  .urgency-row{min-height:44px}
+  .mission-card{min-height:44px}
+  button,.btn{min-height:44px}
 }
 </style>
 </head>
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const { useState, useEffect, useCallback, useMemo } = React;
+const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 const TEAMS = [
@@ -213,6 +219,82 @@ function SVGRing({ size, pct, color, strokeWidth }) {
 function isPitchingMission(name) {
   const n = name.toLowerCase();
   return /\bk(?:s)?\b|strikeout|innings?\b|\bip\b|\bwin(?:s)?\b|\bera\b|\bwhip\b|\bsave(?:s)?\b|\bhold(?:s)?\b|shutout|complete game|pitch|starter|reliev/.test(n);
+}
+
+// ─── Mission classification + effort scoring ("What's Next" list) ─────────────
+// Static bootstrap weights — deliberately NOT derived from per-user history rates yet
+// (that's a future Stage-3-dependent improvement; keep this static until enough history exists).
+const EFFORT_WEIGHTS = { PXP: 1, HIT: 25, K: 20, HR: 60, WIN: 150 };
+// Passive missions (currently just PXP) get multiplied by this for SORT ORDER only — the
+// real remaining/effort numbers shown to the user are never altered by this multiplier.
+const PASSIVE_DISCOUNT_SORT = 3;
+
+// Classify a mission's scoring "unit" from its name. Order matters: check the more specific
+// units (HR, WIN, K) before the broader ones (HIT, PXP) to avoid misclassifying e.g. a
+// "Hit a Home Run" mission as HIT.
+function classifyMissionUnit(name) {
+  const n = (name || '').toLowerCase();
+  if (/home run|\bhr'?s?\b|\bhrs\b/.test(n)) return 'HR';
+  if (/\bwin(?:s)?\b|\bwon\b/.test(n)) return 'WIN';
+  if (/strikeout|\bk'?s?\b|strike out/.test(n)) return 'K';
+  if (/\bhit(?:s)?\b|\bsingle(?:s)?\b|\bdouble(?:s)?\b|\btriple(?:s)?\b|\bbase hit/.test(n)) return 'HIT';
+  if (/\bpxp\b|program xp|\bxp\b/.test(n)) return 'PXP';
+  return 'UNKNOWN';
+}
+
+// A mission is "passive" if it accumulates just by playing (PXP) rather than requiring the
+// player to specifically target a stat. Everything else is "focused" effort.
+function classifyMissionScope(unit) {
+  return unit === 'PXP' ? 'passive' : 'focused';
+}
+
+// Effort score for one not-yet-complete mission: remaining units weighted by how hard that
+// unit type generally is to get. Returns null (unscored) for unrecognized mission names —
+// those are still shown, just ranked last by their remaining-fraction instead of effort.
+function missionEffort(m) {
+  const remaining = Math.max(0, (m.max || 0) - (m.value || 0));
+  const unit = classifyMissionUnit(m.name);
+  const scope = classifyMissionScope(unit);
+  const weight = EFFORT_WEIGHTS[unit];
+  const unscored = weight == null;
+  const effort = unscored ? null : remaining * weight;
+  return { unit, scope, remaining, effort, unscored };
+}
+
+// A single easing tween for numeric displays — old value → new value over ~500ms, ease-out,
+// rounded to an integer each frame. Skips the animation entirely on first mount (so the page
+// doesn't count up from 0 on initial load).
+function useAnimatedNumber(value) {
+  const [display, setDisplay] = useState(value);
+  const prevRef = useRef(value);
+  const firstRef = useRef(true);
+  const rafRef = useRef(null);
+  useEffect(() => {
+    if (firstRef.current) {
+      firstRef.current = false;
+      prevRef.current = value;
+      setDisplay(value);
+      return;
+    }
+    const from = prevRef.current;
+    const to = value;
+    if (from === to) return;
+    const duration = 500;
+    const start = performance.now();
+    function tick(now) {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(Math.round(from + (to - from) * eased));
+      if (t < 1) {
+        rafRef.current = requestAnimationFrame(tick);
+      } else {
+        prevRef.current = to;
+      }
+    }
+    rafRef.current = requestAnimationFrame(tick);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [value]);
+  return display;
 }
 
 function formatDate(iso) {
@@ -336,6 +418,24 @@ function createUid() {
 
 function uidQs(uid) {
   return uid ? ('?uid=' + encodeURIComponent(uid)) : '';
+}
+
+// Single sidebar team row — its own component so useAnimatedNumber (a hook) can be called
+// once per team button instance rather than inside a .map() callback.
+function SidebarTeamButton({ team, active, displayPct, onClick }) {
+  const animatedPct = useAnimatedNumber(displayPct);
+  const isComplete = displayPct === 100;
+  const hasProgress = displayPct > 0;
+  return (
+    <button
+      className={`sidebar-btn${active ? ' active' : ''}${isComplete ? ' complete' : hasProgress ? ' has-progress' : ''}`}
+      onClick={onClick}
+    >
+      <span className="dot" style={{background: isComplete ? 'var(--green)' : hasProgress ? team.color : 'var(--border2)'}}></span>
+      {team.name}
+      <span className="sidebar-pct">{animatedPct}%</span>
+    </button>
+  );
 }
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
@@ -475,6 +575,12 @@ function App() {
 
   const currentTeam = TEAMS.find(t => t.abbr === view);
 
+  const generalProgsPct = generalPrograms
+    ? Math.round(Object.values(generalPrograms.programs).filter(p => p.pct === 100).length / Math.max(Object.keys(generalPrograms.programs).length, 1) * 100)
+    : 0;
+  const animatedTaPct = useAnimatedNumber(teamAffinityOverallPct);
+  const animatedGeneralPct = useAnimatedNumber(generalProgsPct);
+
   return (
     <div className="app">
       {/* Sidebar */}
@@ -492,17 +598,17 @@ function App() {
           </button>
           <button className={`sidebar-btn${view==='howto'?' active':''}`} onClick={() => setView('howto')}>
             <span className="dot" style={{background: view==='howto'?'var(--gold)':'var(--border2)'}}></span>
-            🔗 Sync Data
+            Sync Data
           </button>
           <button className={`sidebar-btn${view==='programs'?' active':''}`} onClick={() => setView('programs')}>
             <span className="dot" style={{background: view==='programs'?'var(--blue)':'var(--border2)'}}></span>
             Team Affinity
-            {programs && <span className="sidebar-pct">{teamAffinityOverallPct}%</span>}
+            {programs && <span className="sidebar-pct">{animatedTaPct}%</span>}
           </button>
           <button className={`sidebar-btn${view==='general-programs'?' active':''}`} onClick={() => setView('general-programs')}>
             <span className="dot" style={{background: view==='general-programs'?'var(--purple)':'var(--border2)'}}></span>
             All Programs
-            {generalPrograms && <span className="sidebar-pct">{Math.round(Object.values(generalPrograms.programs).filter(p => p.pct === 100).length / Math.max(Object.keys(generalPrograms.programs).length,1) * 100)}%</span>}
+            {generalPrograms && <span className="sidebar-pct">{animatedGeneralPct}%</span>}
           </button>
         </div>
 
@@ -516,18 +622,14 @@ function App() {
                 const mainProg = realData?.programs?.find(p => !p.name?.includes('#1 Fan'));
                 const fanProg = realData?.programs?.find(p => p.name?.includes('#1 Fan'));
                 const displayPct = mainProg != null ? (fanProg != null ? Math.round((mainProg.pct + fanProg.pct) / 2) : mainProg.pct) : 0;
-                const isComplete = displayPct === 100;
-                const hasProgress = displayPct > 0;
                 return (
-                  <button
+                  <SidebarTeamButton
                     key={team.abbr}
-                    className={`sidebar-btn${view===team.abbr?' active':''}${isComplete?' complete':hasProgress?' has-progress':''}`}
+                    team={team}
+                    active={view === team.abbr}
+                    displayPct={displayPct}
                     onClick={() => setView(team.abbr)}
-                  >
-                    <span className="dot" style={{background: isComplete ? 'var(--green)' : hasProgress ? team.color : 'var(--border2)'}}></span>
-                    {team.name}
-                    <span className="sidebar-pct">{displayPct}%</span>
-                  </button>
+                  />
                 );
               })}
             </div>
@@ -882,49 +984,53 @@ function OverviewPanel({ setView, programs, programsByAbbr, programsPrev, buildP
     return { div, avgPct, done, total: divTeams.length };
   }), [teamPctMap]);
 
-  // Urgency list
-  const scrapedUrgency = useScraped ? uniqueProgTeams
+  // Effort-ranked "What's Next" list — cheapest-effort missions first, instead of just
+  // closest-to-done. See missionEffort() for the scoring model.
+  const [unitFilter, setUnitFilter] = React.useState('ALL'); // ALL | K | HIT | HR | PXP
+  const [showPassive, setShowPassive] = React.useState(false);
+
+  const whatsNext = useScraped ? uniqueProgTeams
     .flatMap(t => {
       const entry = Object.entries(programsByAbbr).find(([, p]) => p === t);
       const team = entry ? TEAMS.find(tm => tm.abbr === entry[0]) : TEAMS.find(tm => t.teamName?.includes(tm.name));
       if (!team) return [];
-      const taItems = (t.missions || [])
-        .filter(m => !m.done && m.max > 1)
-        .map(m => ({ team, missionName: m.name, value: m.value, max: m.max, pct: Math.round(m.value / m.max * 100), program: 'Team Affinity' }));
-      const fanItems = (t.fanMissions || [])
-        .filter(m => !m.done && m.max > 1)
-        .map(m => ({ team, missionName: m.name, value: m.value, max: m.max, pct: Math.round(m.value / m.max * 100), program: '#1 Fan' }));
-      return [...taItems, ...fanItems];
+      const taItems = (t.missions || []).map(m => ({ m, program: 'Team Affinity' }));
+      const fanItems = (t.fanMissions || []).map(m => ({ m, program: '#1 Fan' }));
+      return [...taItems, ...fanItems]
+        .filter(({ m }) => !m.done && m.max > 1 && (m.value ?? 0) < m.max)
+        .map(({ m, program }) => {
+          const { unit, scope, effort, unscored, remaining } = missionEffort(m);
+          const pct = Math.round(m.value / m.max * 100);
+          const sortKey = unscored
+            ? 1e9 + (remaining / Math.max(m.max, 1))
+            : effort * (scope === 'passive' ? PASSIVE_DISCOUNT_SORT : 1);
+          return { team, missionName: m.name, value: m.value, max: m.max, remaining, pct, program, unit, scope, effort, unscored, sortKey };
+        });
     })
-    .sort((a, b) => b.pct - a.pct)
-    .slice(0, 12)
+    .filter(item => unitFilter === 'ALL' ? (showPassive || item.scope === 'focused') : item.unit === unitFilter)
+    .sort((a, b) => a.sortKey - b.sortKey)
+    .slice(0, 15)
   : [];
 
-  const [urgencyMode, setUrgencyMode] = React.useState('close'); // 'close' | 'quick'
-
-  // Quick wins: missions with the fewest remaining — things finishable in 1-2 games
-  const quickWins = useScraped ? uniqueProgTeams
-    .flatMap(t => {
-      const entry = Object.entries(programsByAbbr).find(([, p]) => p === t);
-      const team = entry ? TEAMS.find(tm => tm.abbr === entry[0]) : TEAMS.find(tm => t.teamName?.includes(tm.name));
-      if (!team) return [];
-      const taItems = (t.missions || [])
-        .filter(m => !m.done && m.max > 1 && m.value > 0)
-        .map(m => ({ team, missionName: m.name, value: m.value, max: m.max, remaining: m.max - m.value, pct: Math.round(m.value / m.max * 100), program: 'Team Affinity' }));
-      const fanItems = (t.fanMissions || [])
-        .filter(m => !m.done && m.max > 1 && m.value > 0)
-        .map(m => ({ team, missionName: m.name, value: m.value, max: m.max, remaining: m.max - m.value, pct: Math.round(m.value / m.max * 100), program: '#1 Fan' }));
-      return [...taItems, ...fanItems];
-    })
-    .sort((a, b) => (a.remaining / a.max) - (b.remaining / b.max))
-    .slice(0, 12)
-  : [];
+  const UNIT_CHIPS = [
+    { id: 'ALL', label: 'All' },
+    { id: 'K', label: 'Ks' },
+    { id: 'HIT', label: 'Hits' },
+    { id: 'HR', label: 'HRs' },
+    { id: 'PXP', label: 'PXP' },
+  ];
 
   const ringColor = displayPct === 100 ? 'var(--green)' : displayPct >= 75 ? 'var(--gold)' : 'var(--blue)';
   const ringTextColor = displayPct === 100 ? 'var(--green)' : displayPct >= 75 ? 'var(--gold)' : 'var(--text)';
 
   // Overall XP/day pace across all teams with history (Stage 3) — hidden if too little data.
   const pace = useMemo(() => overallPaceDelta(history), [history]);
+
+  const animatedDisplayPct = useAnimatedNumber(displayPct);
+  const animatedDone = useAnimatedNumber(displayDone);
+  const animatedMissions = useAnimatedNumber(displayMissions);
+  const animatedRemaining = useAnimatedNumber(displayRemaining);
+  const animatedTotal = useAnimatedNumber(totalMissionsFromData);
 
   return (
     <div>
@@ -948,26 +1054,26 @@ function OverviewPanel({ setView, programs, programsByAbbr, programsPrev, buildP
           <SVGRing size={148} pct={displayPct} color={ringColor} strokeWidth={10} />
           <div className="ring-label">
             <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:'2rem',lineHeight:1,color:ringTextColor}}>
-              {displayPct}%
+              {animatedDisplayPct}%
             </div>
             <div style={{fontSize:'.52rem',textTransform:'uppercase',letterSpacing:'.1em',color:'var(--muted)',marginTop:2}}>overall</div>
           </div>
         </div>
         <div className="hero-stats">
           <div className="hero-stat">
-            <div className="hero-val" style={{color:'var(--green)'}}>{displayDone}<span style={{fontSize:'1rem',color:'var(--muted)'}}>/{TEAMS.length}</span></div>
+            <div className="hero-val" style={{color:'var(--green)'}}>{animatedDone}<span style={{fontSize:'1rem',color:'var(--muted)'}}>/{TEAMS.length}</span></div>
             <div className="hero-label">Teams Complete</div>
           </div>
           <div className="hero-stat">
-            <div className="hero-val" style={{color:'var(--blue)'}}>{displayMissions}</div>
+            <div className="hero-val" style={{color:'var(--blue)'}}>{animatedMissions}</div>
             <div className="hero-label">Missions Done</div>
           </div>
           <div className="hero-stat">
-            <div className="hero-val" style={{color:'var(--purple)'}}>{displayRemaining}</div>
+            <div className="hero-val" style={{color:'var(--purple)'}}>{animatedRemaining}</div>
             <div className="hero-label">Missions Left</div>
           </div>
           <div className="hero-stat">
-            <div className="hero-val" style={{color:'var(--gold)'}}>{totalMissionsFromData}</div>
+            <div className="hero-val" style={{color:'var(--gold)'}}>{animatedTotal}</div>
             <div className="hero-label">Total Missions</div>
           </div>
         </div>
@@ -1001,95 +1107,128 @@ function OverviewPanel({ setView, programs, programsByAbbr, programsPrev, buildP
           const { main: pct, fan: fanPct } = teamPctMap[team.abbr] || { main: 0, fan: 0 };
           const prevPct = prevPctMap[team.abbr]?.main ?? null;
           const delta = prevPct !== null ? pct - prevPct : null;
-          const isComplete = pct === 100;
-          const isNear = pct >= 75 && !isComplete;
-          const pctColor = isComplete ? 'var(--green)' : pct >= 75 ? 'var(--gold)' : pct > 0 ? 'var(--text)' : 'var(--muted)';
           const sparkVals = teamHistorySeries(history, historyKeyByAbbr[team.abbr], 14);
           return (
-            <div
+            <TeamTile
               key={team.abbr}
-              className="team-tile animate-in"
-              style={{
-                animationDelay:`${i*0.022}s`,
-                borderColor: isComplete ? 'rgba(34,197,94,.45)' : isNear ? `${team.color}55` : 'var(--border)',
-                boxShadow: isComplete ? '0 0 18px rgba(34,197,94,.14)' : isNear ? `0 0 14px ${team.color}1a` : 'none',
-              }}
+              team={team}
+              pct={pct}
+              fanPct={fanPct}
+              delta={delta}
+              sparkVals={sparkVals}
+              animDelay={`${i * 0.022}s`}
               onClick={() => setView(team.abbr)}
-            >
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
-                <div className="team-tile-abbr" style={{color: isComplete ? 'var(--green)' : team.color}}>{team.abbr}</div>
-                {delta !== null && delta !== 0 && (
-                  <div style={{fontSize:'.55rem',fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,
-                    color: delta > 0 ? 'var(--green)' : 'var(--red)',lineHeight:1,marginTop:2}}>
-                    {delta > 0 ? '+' : ''}{delta}%
-                  </div>
-                )}
-              </div>
-              <div className="team-tile-city">{team.city}</div>
-              <div className="team-tile-pct" style={{color: pctColor}}>
-                {isComplete ? '✓ Done' : pct > 0 ? `${pct}%` : '—'}
-              </div>
-              <div className="team-tile-bar">
-                <div className="team-tile-fill" style={{width: pct+'%', background: isComplete ? 'var(--green)' : `linear-gradient(90deg,${team.color}99,${team.color})`}} />
-              </div>
-              {fanPct > 0 && (
-                <div style={{marginTop:4,display:'flex',alignItems:'center',gap:4}}>
-                  <div style={{flex:1,height:2,background:'var(--border2)',borderRadius:1,overflow:'hidden'}}>
-                    <div style={{height:'100%',width:fanPct+'%',background:'var(--purple)',borderRadius:1}} />
-                  </div>
-                  <div style={{fontSize:'.5rem',color:'var(--muted2)',flexShrink:0,fontFamily:"'Barlow Condensed',sans-serif"}}>#{fanPct}%</div>
-                </div>
-              )}
-              {sparkVals.length >= 2 && (
-                <div style={{marginTop:4}}>
-                  <Sparkline values={sparkVals} color={isComplete ? 'var(--green)' : team.color} width={100} height={16} />
-                </div>
-              )}
-            </div>
+            />
           );
         })}
       </div>
 
-      {/* Urgency / Quick Wins */}
-      {useScraped && (scrapedUrgency.length > 0 || quickWins.length > 0) && (
+      {/* What's Next — effort-ranked missions, cheapest first */}
+      {useScraped && whatsNext.length > 0 && (
         <>
-          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
-            <div className="section-title" style={{marginBottom:0}}>What to Play</div>
-            <div style={{display:'flex',gap:4,marginLeft:'auto'}}>
-              {[{id:'close',label:'Closest to Done'},{id:'quick',label:'⚡ Quick Wins'}].map(tab => (
-                <button key={tab.id} onClick={() => setUrgencyMode(tab.id)}
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12,flexWrap:'wrap'}}>
+            <div className="section-title" style={{marginBottom:0}}>What's Next</div>
+            <div style={{display:'flex',gap:4,marginLeft:'auto',flexWrap:'wrap'}}>
+              {UNIT_CHIPS.map(chip => (
+                <button key={chip.id} onClick={() => setUnitFilter(chip.id)}
                   style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:'.68rem',
-                    textTransform:'uppercase',letterSpacing:'.06em',padding:'4px 10px',borderRadius:4,border:'1px solid',cursor:'pointer',
-                    background: urgencyMode===tab.id ? 'rgba(232,200,74,.12)' : 'transparent',
-                    borderColor: urgencyMode===tab.id ? 'var(--gold)' : 'var(--border)',
-                    color: urgencyMode===tab.id ? 'var(--gold)' : 'var(--muted)'}}>
-                  {tab.label}
+                    textTransform:'uppercase',letterSpacing:'.06em',padding:'4px 10px',borderRadius:4,border:'1px solid',cursor:'pointer',minHeight:28,
+                    background: unitFilter===chip.id ? 'rgba(232,200,74,.12)' : 'transparent',
+                    borderColor: unitFilter===chip.id ? 'var(--gold)' : 'var(--border)',
+                    color: unitFilter===chip.id ? 'var(--gold)' : 'var(--muted)'}}>
+                  {chip.label}
                 </button>
               ))}
+              <button onClick={() => setShowPassive(v => !v)}
+                style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:'.68rem',
+                  textTransform:'uppercase',letterSpacing:'.06em',padding:'4px 10px',borderRadius:4,border:'1px solid',cursor:'pointer',minHeight:28,
+                  background: showPassive ? 'rgba(167,139,250,.12)' : 'transparent',
+                  borderColor: showPassive ? 'var(--purple)' : 'var(--border)',
+                  color: showPassive ? 'var(--purple)' : 'var(--muted)'}}>
+                {showPassive ? '✓ ' : ''}Show Passive
+              </button>
             </div>
           </div>
           <div className="urgency-list">
-            {(urgencyMode === 'quick' ? quickWins : scrapedUrgency).map((item, i) => (
+            {whatsNext.map((item, i) => (
               <div key={i} className="urgency-row animate-in" style={{borderLeftColor:item.team.color,animationDelay:`${i*0.03}s`}} onClick={() => setView(item.team.abbr)}>
                 <div className="urgency-team" style={{color:item.team.color}}>{item.team.city} {item.team.name}</div>
                 <div className="urgency-mission">
                   {item.program === '#1 Fan' && <span style={{color:'var(--purple)',fontSize:'.6rem',fontWeight:700,marginRight:5}}>#1 FAN</span>}
                   {item.missionName}
+                  <span style={{marginLeft:6,fontSize:'.6rem',fontWeight:700,textTransform:'uppercase',letterSpacing:'.04em',
+                    color: item.scope === 'passive' ? 'var(--muted2)' : 'var(--blue)'}}>
+                    {item.scope === 'passive' ? '· Passive' : '· Focused'}
+                  </span>
+                  {item.unscored && <span style={{marginLeft:6,fontSize:'.6rem',color:'var(--muted2)'}}>· unscored</span>}
                 </div>
                 <div className="urgency-bar"><div className="urgency-bar-fill" style={{width:item.pct+'%',background:item.program==='#1 Fan'?'var(--purple)':item.team.color}}/></div>
-                {urgencyMode === 'quick'
-                  ? <div className="urgency-remaining" style={{color:'var(--green)',minWidth:60,textAlign:'right'}}>{item.remaining} left</div>
-                  : <div className="urgency-remaining" style={{color:item.pct>=90?'var(--green)':item.pct>=70?'var(--gold)':'var(--text)'}}>{item.max-item.value} left</div>
-                }
+                <div className="urgency-remaining" style={{color:item.pct>=90?'var(--green)':item.pct>=70?'var(--gold)':'var(--text)'}}>{item.value}/{item.max}</div>
                 <div className="urgency-pct">{item.pct}%</div>
               </div>
             ))}
           </div>
         </>
       )}
-      {scrapedUrgency.length === 0 && quickWins.length === 0 && useScraped && (
+      {whatsNext.length === 0 && useScraped && (
         <div style={{textAlign:'center',padding:'40px 0',color:'var(--green)',fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:'1.2rem',letterSpacing:'.05em'}}>
           ALL MISSIONS COMPLETE 🏆
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Single team tile in the Overview grid. Its own component so useAnimatedNumber can be
+// called per-instance, and so the adaptive primary-metric logic stays in one place: once
+// Team Affinity hits 100%, the #1 Fan pct becomes the headline number and TA collapses to a
+// small "TA ✓" badge instead of a secondary bar.
+function TeamTile({ team, pct, fanPct, delta, sparkVals, animDelay, onClick }) {
+  const taComplete = pct === 100;
+  const primaryPct = taComplete ? fanPct : pct;
+  const animatedPrimaryPct = useAnimatedNumber(primaryPct);
+  const primaryComplete = primaryPct === 100;
+  const isNear = primaryPct >= 75 && !primaryComplete;
+  const pctColor = primaryComplete ? 'var(--green)' : primaryPct >= 75 ? 'var(--gold)' : primaryPct > 0 ? 'var(--text)' : 'var(--muted)';
+  return (
+    <div
+      className="team-tile animate-in"
+      style={{
+        animationDelay: animDelay,
+        borderColor: primaryComplete ? 'rgba(34,197,94,.45)' : isNear ? `${team.color}55` : 'var(--border)',
+        boxShadow: primaryComplete ? '0 0 18px rgba(34,197,94,.14)' : isNear ? `0 0 14px ${team.color}1a` : 'none',
+      }}
+      onClick={onClick}
+    >
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+        <div className="team-tile-abbr" style={{color: taComplete ? 'var(--green)' : team.color}}>{team.abbr}</div>
+        {delta !== null && delta !== 0 && (
+          <div style={{fontSize:'.55rem',fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,
+            color: delta > 0 ? 'var(--green)' : 'var(--red)',lineHeight:1,marginTop:2}}>
+            {delta > 0 ? '+' : ''}{delta}%
+          </div>
+        )}
+      </div>
+      <div className="team-tile-city">{team.city}</div>
+      <div className="team-tile-pct" style={{color: pctColor}}>
+        {primaryComplete ? '✓ Done' : primaryPct > 0 ? `${animatedPrimaryPct}%` : '—'}
+      </div>
+      <div className="team-tile-bar">
+        <div className="team-tile-fill" style={{width: primaryPct+'%', background: primaryComplete ? 'var(--green)' : `linear-gradient(90deg,${team.color}99,${team.color})`}} />
+      </div>
+      {taComplete ? (
+        <div style={{marginTop:4,fontSize:'.55rem',fontWeight:700,letterSpacing:'.04em',color:'var(--green)'}}>TA ✓</div>
+      ) : fanPct > 0 && (
+        <div style={{marginTop:4,display:'flex',alignItems:'center',gap:4}}>
+          <div style={{flex:1,height:2,background:'var(--border2)',borderRadius:1,overflow:'hidden'}}>
+            <div style={{height:'100%',width:fanPct+'%',background:'var(--purple)',borderRadius:1}} />
+          </div>
+          <div style={{fontSize:'.5rem',color:'var(--muted2)',flexShrink:0,fontFamily:"'Barlow Condensed',sans-serif"}}>#{fanPct}%</div>
+        </div>
+      )}
+      {sparkVals.length >= 2 && (
+        <div style={{marginTop:4}}>
+          <Sparkline values={sparkVals} color={primaryComplete ? 'var(--green)' : team.color} width={100} height={16} />
         </div>
       )}
     </div>
