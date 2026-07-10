@@ -1,13 +1,16 @@
 // Shared bookmarklet payload, served at /sync.js by both deployment targets
 // (the Cloudflare Worker in worker/ and the self-hosted Docker server in server/).
-// __ORIGIN__, __UID__, and __KEY__ are substituted per-request by whichever server is serving it.
-// __KEY__ is the deployer's own SYNC_KEY secret (if configured) — sent back on writes so the
-// ingest endpoints can reject requests that didn't come from this served script.
+// __ORIGIN__ and __UID__ are substituted per-request by whichever server is serving it.
+// The SYNC_KEY (if the deployer configured one) is NOT embedded here — /sync.js is publicly
+// fetchable, so baking a secret into it would leak it to anyone with the URL. Instead the
+// bookmarklet itself sets window.__MLB26_SYNC_KEY before loading this script, and this script
+// reads it at runtime and sends it back on writes so the ingest endpoints can reject requests
+// that didn't come with a valid key.
 // Runs entirely via same-origin fetch()+DOMParser from a theshow.com tab — no extension needed.
 const SYNC_SCRIPT = `(async function() {
   var INGEST_ORIGIN = '__ORIGIN__';
   var UID = '__UID__';
-  var SYNC_KEY = '__KEY__';
+  var SYNC_KEY = (typeof window !== 'undefined' && window.__MLB26_SYNC_KEY) || '';
   var UID_QS = UID ? ('?uid=' + encodeURIComponent(UID)) : '';
   var BATCH = 4;
 

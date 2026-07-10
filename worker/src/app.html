@@ -78,13 +78,6 @@ body::before{content:'';position:fixed;inset:0;background:
 .prog-nums{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:.8rem;color:var(--muted);white-space:nowrap;min-width:52px;text-align:right}
 .prog-nums.active-stat{color:var(--gold)}
 
-.prog-input-row{display:flex;align-items:center;gap:8px;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)}
-.prog-input{width:70px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:'Barlow Condensed',sans-serif;font-size:.9rem;padding:4px 8px;outline:none;text-align:center}
-.prog-input:focus{border-color:var(--gold)}
-.prog-slash{color:var(--muted);font-size:.8rem}
-.prog-target{font-family:'Barlow Condensed',sans-serif;font-size:.8rem;color:var(--muted)}
-.prog-remaining{font-family:'Barlow Condensed',sans-serif;font-size:.75rem;font-weight:700;color:var(--blue);margin-left:auto}
-
 /* Overview dashboard */
 .overview-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-bottom:24px}
 .stat-tile{background:var(--s1);border:1px solid var(--border);border-radius:8px;padding:14px 16px}
@@ -161,9 +154,6 @@ body::before{content:'';position:fixed;inset:0;background:
 const { useState, useEffect, useCallback, useMemo } = React;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
-const STORAGE_KEY = 'mlb26_pt_v1';
-const API = '/proxy';
-
 const TEAMS = [
   {abbr:'BAL',name:'Orioles',city:'Baltimore',div:'AL East',color:'#DF4601'},
   {abbr:'BOS',name:'Red Sox',city:'Boston',div:'AL East',color:'#BD3039'},
@@ -220,49 +210,9 @@ function SVGRing({ size, pct, color, strokeWidth }) {
   );
 }
 
-// Mission templates per team - stat-based
-const HITTING_MISSIONS = [
-  {id:'hits',    label:'Hits',        target:75,  stat:'H',  icon:'🎯', color:'#4a9eff', scoreAttr: c => (c.contact_left||0)+(c.contact_right||0)},
-  {id:'hrs',     label:'Home Runs',   target:10,  stat:'HR', icon:'💥', color:'#ef4444', scoreAttr: c => (c.power_left||0)+(c.power_right||0)},
-  {id:'runs',    label:'Runs Scored', target:40,  stat:'R',  icon:'🏃', color:'#22c55e', scoreAttr: c => (c.speed||0)+(c.baserunning_ability||0)},
-  {id:'tb',      label:'Total Bases', target:120, stat:'TB', icon:'⚡', color:'#fbbf24', scoreAttr: c => (c.power_left||0)+(c.power_right||0)+(c.contact_left||0)+(c.contact_right||0)},
-];
-const PITCHING_MISSIONS = [
-  {id:'wins',    label:'Wins',        target:5,   stat:'W',  icon:'🏆', color:'#a78bfa', scoreAttr: c => (c.pitch_velocity||0)+(c.pitch_movement||0)},
-  {id:'ks',      label:'Strikeouts',  target:50,  stat:'K',  icon:'🔥', color:'#f97316', scoreAttr: c => (c.k_per_bf||0)+(c.pitch_velocity||0)},
-  {id:'ip',      label:'Innings',     target:30,  stat:'IP', icon:'⏱️', color:'#06b6d4', scoreAttr: c => (c.stamina||0)+(c.pitch_control||0)},
-];
-const MOMENT_MISSIONS = [
-  {id:'boss1',   label:'Jolt Boss Moment 1', target:1, stat:'MOM', icon:'⭐', color:'#fbbf24'},
-  {id:'boss2',   label:'Jolt Boss Moment 2', target:1, stat:'MOM', icon:'⭐', color:'#fbbf24'},
-];
-const ALL_MISSIONS = [...MOMENT_MISSIONS, ...HITTING_MISSIONS, ...PITCHING_MISSIONS];
-
 function isPitchingMission(name) {
   const n = name.toLowerCase();
   return /\bk(?:s)?\b|strikeout|innings?\b|\bip\b|\bwin(?:s)?\b|\bera\b|\bwhip\b|\bsave(?:s)?\b|\bhold(?:s)?\b|shutout|complete game|pitch|starter|reliev/.test(n);
-}
-
-// ─── State helpers ────────────────────────────────────────────────────────────
-function initTeamState() {
-  const s = {};
-  TEAMS.forEach(t => {
-    s[t.abbr] = { missions: {} };
-    ALL_MISSIONS.forEach(m => { s[t.abbr].missions[m.id] = { current: 0, done: false }; });
-  });
-  return s;
-}
-
-function loadState() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch(e) {}
-  return { teams: initTeamState() };
-}
-
-function saveState(s) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch(e) {}
 }
 
 function formatDate(iso) {
@@ -309,7 +259,6 @@ function uidQs(uid) {
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 function App() {
-  const [appState, setAppState] = useState(() => loadState());
   const [view, setView] = useState('overview');
   const [toast, setToast] = useState('');
   const [uid, setUid] = useState(() => getUid());
@@ -332,52 +281,7 @@ function App() {
     showToast('Tracker created — install the new bookmarklet below');
   }
 
-  // Persist mission progress state
-  useEffect(() => { saveState(appState); }, [appState]);
   useEffect(() => { loadPrograms(); loadGeneralPrograms(); loadProgramsPrev(); }, [uid]);
-
-  function updateMission(abbr, missionId, field, value) {
-    setAppState(prev => {
-      const next = { ...prev };
-      next.teams = { ...next.teams };
-      next.teams[abbr] = { ...next.teams[abbr] };
-      next.teams[abbr].missions = { ...next.teams[abbr].missions };
-      next.teams[abbr].missions[missionId] = {
-        ...next.teams[abbr].missions[missionId],
-        [field]: value,
-      };
-      return next;
-    });
-  }
-
-  function toggleDone(abbr, missionId) {
-    const cur = appState.teams[abbr]?.missions[missionId];
-    const m = ALL_MISSIONS.find(x => x.id === missionId);
-    if (!m) return;
-    const nowDone = !cur?.done;
-    updateMission(abbr, missionId, 'done', nowDone);
-    if (nowDone) updateMission(abbr, missionId, 'current', m.target);
-  }
-
-  function setCurrent(abbr, missionId, val) {
-    const m = ALL_MISSIONS.find(x => x.id === missionId);
-    if (!m) return;
-    const num = Math.max(0, Math.min(m.target, parseInt(val) || 0));
-    updateMission(abbr, missionId, 'current', num);
-    if (num >= m.target) updateMission(abbr, missionId, 'done', true);
-    else if (num < m.target) updateMission(abbr, missionId, 'done', false);
-  }
-
-  // Compute per-team progress
-  function teamProgress(abbr) {
-    const ms = appState.teams[abbr]?.missions || {};
-    let done = 0, total = ALL_MISSIONS.length;
-    ALL_MISSIONS.forEach(m => {
-      const ms_data = ms[m.id];
-      if (ms_data?.done || ms_data?.current >= m.target) done++;
-    });
-    return { done, total, pct: Math.round(done / total * 100) };
-  }
 
   async function loadPrograms() {
     setProgramsLoading(true);
@@ -423,22 +327,6 @@ function App() {
     return map;
   }
 
-  // Build urgency list (most critical incomplete missions across all teams)
-  const urgencyList = useMemo(() => {
-    const items = [];
-    TEAMS.forEach(team => {
-      ALL_MISSIONS.forEach(m => {
-        const ms = appState.teams[team.abbr]?.missions[m.id] || {};
-        if (ms.done || (ms.current || 0) >= m.target) return;
-        const remaining = m.target - (ms.current || 0);
-        const pct = Math.round((ms.current || 0) / m.target * 100);
-        items.push({ team, mission: m, remaining, pct, current: ms.current || 0 });
-      });
-    });
-    // Sort by % complete descending (closest to done first)
-    return items.sort((a,b) => b.pct - a.pct).slice(0, 15);
-  }, [appState]);
-
   const programsByAbbr = useMemo(() => {
     if (!programs?.teams) return {};
     const result = {};
@@ -463,17 +351,6 @@ function App() {
     }, 0);
     return Math.round(total / teams.length);
   }, [programsByAbbr]);
-
-  // Global stats
-  const globalStats = useMemo(() => {
-    let totalDone = 0, totalMissions = TEAMS.length * ALL_MISSIONS.length, teamsDone = 0;
-    TEAMS.forEach(t => {
-      const p = teamProgress(t.abbr);
-      totalDone += p.done;
-      if (p.done === p.total) teamsDone++;
-    });
-    return { totalDone, totalMissions, teamsDone, pct: Math.round(totalDone / totalMissions * 100) };
-  }, [appState]);
 
   const currentTeam = TEAMS.find(t => t.abbr === view);
 
@@ -517,7 +394,7 @@ function App() {
                 const realData = programsByAbbr[team.abbr];
                 const mainProg = realData?.programs?.find(p => !p.name?.includes('#1 Fan'));
                 const fanProg = realData?.programs?.find(p => p.name?.includes('#1 Fan'));
-                const displayPct = mainProg != null ? (fanProg != null ? Math.round((mainProg.pct + fanProg.pct) / 2) : mainProg.pct) : teamProgress(team.abbr).pct;
+                const displayPct = mainProg != null ? (fanProg != null ? Math.round((mainProg.pct + fanProg.pct) / 2) : mainProg.pct) : 0;
                 const isComplete = displayPct === 100;
                 const hasProgress = displayPct > 0;
                 return (
@@ -540,16 +417,13 @@ function App() {
 
       {/* Main */}
       <div className="main">
-        {view === 'overview' && <OverviewPanel stats={globalStats} urgency={urgencyList} setView={setView} programs={programs} programsByAbbr={programsByAbbr} programsPrev={programsPrev} buildPctMap={buildPctMap} />}
+        {view === 'overview' && <OverviewPanel setView={setView} programs={programs} programsByAbbr={programsByAbbr} programsPrev={programsPrev} buildPctMap={buildPctMap} />}
         {view === 'howto' && <HowToPanel uid={uid} onCreateTracker={handleCreateTracker} />}
         {view === 'programs' && <ProgramsPanel programs={programs} loading={programsLoading} onReload={loadPrograms} />}
         {view === 'general-programs' && <GeneralProgramsPanel generalPrograms={generalPrograms} onReload={loadGeneralPrograms} />}
         {currentTeam && (
           <TeamPanel
             team={currentTeam}
-            missions={appState.teams[currentTeam.abbr]?.missions || {}}
-            toggleDone={toggleDone}
-            setCurrent={setCurrent}
             programData={programsByAbbr[currentTeam.abbr]}
           />
         )}
@@ -836,7 +710,7 @@ function GeneralProgramsPanel({ generalPrograms, onReload }) {
 }
 
 // ─── Overview Panel ───────────────────────────────────────────────────────────
-function OverviewPanel({ stats, urgency, setView, programs, programsByAbbr, programsPrev, buildPctMap }) {
+function OverviewPanel({ setView, programs, programsByAbbr, programsPrev, buildPctMap }) {
   const progTeams = programs ? Object.values(programs.teams) : [];
   const seen = new Set();
   const uniqueProgTeams = progTeams.filter(t => {
@@ -853,10 +727,10 @@ function OverviewPanel({ stats, urgency, setView, programs, programsByAbbr, prog
   const overallPct = totalMissionsFromData > 0 ? Math.round(doneMissionsFromData / totalMissionsFromData * 100) : 0;
   const useScraped = uniqueProgTeams.length > 0;
 
-  const displayPct = useScraped ? overallPct : stats.pct;
-  const displayDone = useScraped ? teamsComplete : stats.teamsDone;
-  const displayMissions = useScraped ? doneMissionsFromData : stats.totalDone;
-  const displayRemaining = useScraped ? totalMissionsFromData - doneMissionsFromData : stats.totalMissions - stats.totalDone;
+  const displayPct = useScraped ? overallPct : 0;
+  const displayDone = useScraped ? teamsComplete : 0;
+  const displayMissions = useScraped ? doneMissionsFromData : 0;
+  const displayRemaining = useScraped ? totalMissionsFromData - doneMissionsFromData : 0;
 
   // Per-team pct map
   const teamPctMap = useMemo(() => {
@@ -958,7 +832,7 @@ function OverviewPanel({ stats, urgency, setView, programs, programsByAbbr, prog
             <div className="hero-label">Missions Left</div>
           </div>
           <div className="hero-stat">
-            <div className="hero-val" style={{color:'var(--gold)'}}>{totalMissionsFromData || TEAMS.length * ALL_MISSIONS.length}</div>
+            <div className="hero-val" style={{color:'var(--gold)'}}>{totalMissionsFromData}</div>
             <div className="hero-label">Total Missions</div>
           </div>
         </div>
@@ -1072,22 +946,6 @@ function OverviewPanel({ stats, urgency, setView, programs, programsByAbbr, prog
           </div>
         </>
       )}
-      {!useScraped && urgency.length > 0 && (
-        <>
-          <div className="section-title">Closest to Completion</div>
-          <div className="urgency-list">
-            {urgency.map((item, i) => (
-              <div key={i} className="urgency-row animate-in" style={{borderLeftColor:item.team.color,animationDelay:`${i*0.035}s`}} onClick={() => setView(item.team.abbr)}>
-                <div className="urgency-team" style={{color:item.team.color}}>{item.team.city} {item.team.name}</div>
-                <div className="urgency-mission">{item.mission.icon} {item.mission.label}</div>
-                <div className="urgency-bar"><div className="urgency-bar-fill" style={{width:item.pct+'%',background:item.mission.color}}/></div>
-                <div className="urgency-remaining" style={{color:item.mission.color}}>{item.remaining} left</div>
-                <div className="urgency-pct">{item.pct}%</div>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
       {scrapedUrgency.length === 0 && quickWins.length === 0 && useScraped && (
         <div style={{textAlign:'center',padding:'40px 0',color:'var(--green)',fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:'1.2rem',letterSpacing:'.05em'}}>
           ALL MISSIONS COMPLETE 🏆
@@ -1098,7 +956,7 @@ function OverviewPanel({ stats, urgency, setView, programs, programsByAbbr, prog
 }
 
 // ─── Team Panel ───────────────────────────────────────────────────────────────
-function TeamPanel({ team, missions, toggleDone, setCurrent, programData }) {
+function TeamPanel({ team, programData }) {
   const mainProg = programData?.programs?.find(p => !p.name?.includes('#1 Fan'));
   const fanProg = programData?.programs?.find(p => p.name?.includes('#1 Fan'));
   const scrapedMissions = programData?.missions || [];
@@ -1213,11 +1071,42 @@ function TeamPanel({ team, missions, toggleDone, setCurrent, programData }) {
 }
 
 // ─── How To Panel ─────────────────────────────────────────────────────────────
+const SYNC_KEY_STORAGE = 'mlb26_synckey';
+
 function HowToPanel({ uid, onCreateTracker }) {
   const origin = window.location.origin;
   const uidParam = uid ? ('uid=' + encodeURIComponent(uid) + '&') : '';
-  const bookmarklet = `javascript:(function(){var s=document.createElement('script');s.src='${origin}/sync.js?${uidParam}t='+Date.now();document.body.appendChild(s);})();`;
   const personalUrl = uid ? `${origin}/?uid=${encodeURIComponent(uid)}` : origin + '/';
+
+  // The sync key (if this deployment has one configured) is never embedded in the served
+  // /sync.js — instead we learn it from /config (revealed only if Basic Auth already gated
+  // this request) or fall back to a key the user pasted in once, stored in localStorage.
+  const [config, setConfig] = useState(null);
+  const [pastedKey, setPastedKey] = useState(() => {
+    try { return localStorage.getItem(SYNC_KEY_STORAGE) || ''; } catch(e) { return ''; }
+  });
+  const [keyInput, setKeyInput] = useState('');
+
+  useEffect(() => {
+    fetch('/config', { cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null)
+      .then(setConfig)
+      .catch(() => setConfig(null));
+  }, []);
+
+  const effectiveKey = (config && config.syncKey) || pastedKey || '';
+  const needsPastedKey = !!(config && config.syncKeyRequired && !config.syncKey);
+  const missingKey = !!(config && config.syncKeyRequired && !effectiveKey);
+
+  const bookmarklet = `javascript:(function(){window.__MLB26_SYNC_KEY=${JSON.stringify(effectiveKey)};var s=document.createElement('script');s.src='${origin}/sync.js?${uidParam}t='+Date.now();document.body.appendChild(s);})();`;
+
+  function saveKey() {
+    const trimmed = keyInput.trim();
+    if (!trimmed) return;
+    try { localStorage.setItem(SYNC_KEY_STORAGE, trimmed); } catch(e) {}
+    setPastedKey(trimmed);
+    setKeyInput('');
+  }
 
   const [copied, setCopied] = useState(false);
   const [urlCopied, setUrlCopied] = useState(false);
@@ -1240,6 +1129,40 @@ function HowToPanel({ uid, onCreateTracker }) {
           background on any mlb26.theshow.com page. No extension install needed. One click pulls your entire Team Affinity,
           #1 Fan, and other program progress and pushes it here automatically.
         </div>
+
+        {missingKey && (
+          <div style={{background:'rgba(239,68,68,.1)',border:'1px solid var(--red)',borderRadius:8,padding:'12px 14px',marginBottom:16}}>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:'.85rem',color:'var(--red)',marginBottom:4}}>
+              ⚠ Sync key required
+            </div>
+            <div style={{fontSize:'.78rem',color:'var(--muted)',lineHeight:1.6}}>
+              This deployment requires a sync key, but this browser doesn't have one yet. Ask whoever runs this
+              deployment for the key and paste it below — the bookmarklet won't work until then.
+            </div>
+          </div>
+        )}
+
+        {needsPastedKey && (
+          <div style={{background:'var(--s2)',border:'1px solid var(--border2)',borderRadius:8,padding:'14px 16px',marginBottom:16}}>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:'.85rem',marginBottom:6}}>
+              Paste your sync key
+            </div>
+            <div style={{fontSize:'.76rem',color:'var(--muted)',lineHeight:1.6,marginBottom:8}}>
+              This deployment doesn't have Basic Auth set up, so the key can't be handed to you automatically.
+              Paste it here once — it'll be saved in this browser and baked into your bookmarklet below.
+            </div>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+              <input
+                type="text"
+                value={keyInput}
+                onChange={e => setKeyInput(e.target.value)}
+                placeholder={pastedKey ? 'Key saved — paste a new one to replace it' : 'Paste sync key here'}
+                style={{flex:1,minWidth:200,background:'var(--s3)',border:'1px solid var(--border2)',borderRadius:5,color:'var(--text)',padding:'6px 10px',fontSize:'.78rem',fontFamily:'monospace'}}
+              />
+              <button className="btn btn-gold" style={{fontSize:'.75rem'}} onClick={saveKey}>Save Key</button>
+            </div>
+          </div>
+        )}
 
         {/* Multi-user profile section */}
         <div style={{background:'var(--s2)',border:'1px solid var(--border2)',borderRadius:8,padding:'14px 16px',marginBottom:24}}>
@@ -1314,6 +1237,9 @@ function HowToPanel({ uid, onCreateTracker }) {
           <pre style={{background:'var(--s2)',border:'1px solid var(--border)',borderRadius:8,padding:'14px 16px',fontSize:'.72rem',lineHeight:1.6,color:'#a8d4ff',overflowX:'auto',whiteSpace:'pre-wrap',wordBreak:'break-all'}}>
             {bookmarklet}
           </pre>
+          <div style={{fontSize:'.72rem',color:'var(--muted)',marginTop:8}}>
+            Updated your deployment? Re-install the bookmarklet above — old copies may not carry your sync key.
+          </div>
         </div>
       </div>
     </div>
