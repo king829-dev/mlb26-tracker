@@ -486,6 +486,10 @@ const SYNC_SCRIPT = `(async function() {
     var teamsScraped = 0;
     if (changedKeys.length === 0) {
       log('Teams already up to date.');
+      // Nothing changed, so there's no batch to post — but still record that a sync ran,
+      // so the dashboard's "Last synced" indicator reflects this run instead of showing
+      // stale/amber even though everything was checked and confirmed unchanged.
+      await postTeamsBatch({}, syncId, { teamsScanned: hubScannedCount, teamsScraped: 0, programsFound: null });
       setProgress(80);
     } else {
       teamsScraped = await syncChangedTeams(hubMap, changedKeys, syncId, hubScannedCount);

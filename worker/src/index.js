@@ -173,10 +173,17 @@ export default {
         return Response.json({ error: 'Malformed JSON' }, { status: 400, headers: CORS });
       }
       const data = parsed.data;
-      if (!isPlainObject(data.teams) || Object.keys(data.teams).length === 0 || !Object.values(data.teams).every(isPlainObject)) {
-        return Response.json({ error: 'Refusing to save empty/invalid teams — likely scraped from the wrong tab' }, { status: 400, headers: CORS });
+      if (!isPlainObject(data.teams) || !Object.values(data.teams).every(isPlainObject)) {
+        return Response.json({ error: 'Refusing to save invalid teams — likely scraped from the wrong tab' }, { status: 400, headers: CORS });
       }
       const isPartial = data.partial === true && typeof data.syncId === 'string' && data.syncId.length > 0;
+      // Non-partial (legacy full-replace) posts must still have at least one team — an empty
+      // full replace is almost certainly a scrape-from-the-wrong-tab mistake. Partial "touch"
+      // posts (empty teams, used just to record that a sync ran and found nothing changed) are
+      // exempt, since an empty batch there is intentional.
+      if (!isPartial && Object.keys(data.teams).length === 0) {
+        return Response.json({ error: 'Refusing to save empty teams — likely scraped from the wrong tab' }, { status: 400, headers: CORS });
+      }
       const syncId = isPartial ? data.syncId.slice(0, 40) : null;
       try {
         const currentRaw = await env.INVENTORY.get(kvKey('programs', uid));
