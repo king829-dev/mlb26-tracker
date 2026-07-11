@@ -1,0 +1,1427 @@
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { createRoot } from 'react-dom/client';
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+const TEAMS = [
+  {abbr:'BAL',name:'Orioles',city:'Baltimore',div:'AL East',color:'#DF4601'},
+  {abbr:'BOS',name:'Red Sox',city:'Boston',div:'AL East',color:'#BD3039'},
+  {abbr:'NYY',name:'Yankees',city:'New York',div:'AL East',color:'#a0aec0'},
+  {abbr:'TB', name:'Rays',city:'Tampa Bay',div:'AL East',color:'#8FBCE6'},
+  {abbr:'TOR',name:'Blue Jays',city:'Toronto',div:'AL East',color:'#134A8E'},
+  {abbr:'CWS',name:'White Sox',city:'Chicago',div:'AL Central',color:'#a0aec0'},
+  {abbr:'CLE',name:'Guardians',city:'Cleveland',div:'AL Central',color:'#E31937'},
+  {abbr:'DET',name:'Tigers',city:'Detroit',div:'AL Central',color:'#FA4616'},
+  {abbr:'KC', name:'Royals',city:'Kansas City',div:'AL Central',color:'#004687'},
+  {abbr:'MIN',name:'Twins',city:'Minnesota',div:'AL Central',color:'#6daee8'},
+  {abbr:'HOU',name:'Astros',city:'Houston',div:'AL West',color:'#EB6E1F'},
+  {abbr:'LAA',name:'Angels',city:'Los Angeles',div:'AL West',color:'#BA0021'},
+  {abbr:'OAK',name:'Athletics',city:'Oakland',div:'AL West',color:'#44a830'},
+  {abbr:'SEA',name:'Mariners',city:'Seattle',div:'AL West',color:'#005C5C'},
+  {abbr:'TEX',name:'Rangers',city:'Texas',div:'AL West',color:'#4a7fc1'},
+  {abbr:'ATL',name:'Braves',city:'Atlanta',div:'NL East',color:'#CE1141'},
+  {abbr:'MIA',name:'Marlins',city:'Miami',div:'NL East',color:'#00A3E0'},
+  {abbr:'NYM',name:'Mets',city:'New York',div:'NL East',color:'#4a85d0'},
+  {abbr:'PHI',name:'Phillies',city:'Philadelphia',div:'NL East',color:'#E81828'},
+  {abbr:'WSH',name:'Nationals',city:'Washington',div:'NL East',color:'#AB0003'},
+  {abbr:'CHC',name:'Cubs',city:'Chicago',div:'NL Central',color:'#0E3386'},
+  {abbr:'CIN',name:'Reds',city:'Cincinnati',div:'NL Central',color:'#C6011F'},
+  {abbr:'MIL',name:'Brewers',city:'Milwaukee',div:'NL Central',color:'#B6922E'},
+  {abbr:'PIT',name:'Pirates',city:'Pittsburgh',div:'NL Central',color:'#FDB827'},
+  {abbr:'STL',name:'Cardinals',city:'St. Louis',div:'NL Central',color:'#C41E3A'},
+  {abbr:'ARI',name:'Diamondbacks',city:'Arizona',div:'NL West',color:'#A71930'},
+  {abbr:'COL',name:'Rockies',city:'Colorado',div:'NL West',color:'#8a6bc1'},
+  {abbr:'LAD',name:'Dodgers',city:'Los Angeles',div:'NL West',color:'#005A9C'},
+  {abbr:'SD', name:'Padres',city:'San Diego',div:'NL West',color:'#7B5E48'},
+  {abbr:'SF', name:'Giants',city:'San Francisco',div:'NL West',color:'#FD5A1E'},
+];
+
+const DIVISIONS = ['AL East','AL Central','AL West','NL East','NL Central','NL West'];
+
+const DIV_COLORS = {
+  'AL East':'#4a9eff','AL Central':'#06b6d4','AL West':'#22c55e',
+  'NL East':'#ef4444','NL Central':'#f97316','NL West':'#a78bfa',
+};
+
+function SVGRing({ size, pct, color, strokeWidth }) {
+  const sw = strokeWidth || Math.max(5, Math.round(size / 14));
+  const r = size / 2 - sw;
+  const circ = 2 * Math.PI * r;
+  const capped = Math.min(100, Math.max(0, pct || 0));
+  const offset = circ - (capped / 100) * circ;
+  return (
+    <svg width={size} height={size} style={{transform:'rotate(-90deg)',display:'block'}}>
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="var(--border)" strokeWidth={sw} />
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={sw}
+        strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={offset}
+        style={{transition:'stroke-dashoffset 1.4s cubic-bezier(.4,0,.2,1)'}} />
+    </svg>
+  );
+}
+
+function isPitchingMission(name) {
+  const n = name.toLowerCase();
+  return /\bk(?:s)?\b|strikeout|innings?\b|\bip\b|\bwin(?:s)?\b|\bera\b|\bwhip\b|\bsave(?:s)?\b|\bhold(?:s)?\b|shutout|complete game|pitch|starter|reliev/.test(n);
+}
+
+// ─── Mission classification + effort scoring ("What's Next" list) ─────────────
+// Static bootstrap weights — deliberately NOT derived from per-user history rates yet
+// (that's a future Stage-3-dependent improvement; keep this static until enough history exists).
+const EFFORT_WEIGHTS = { PXP: 1, HIT: 25, K: 20, HR: 60, WIN: 150 };
+// Passive missions (currently just PXP) get multiplied by this for SORT ORDER only — the
+// real remaining/effort numbers shown to the user are never altered by this multiplier.
+const PASSIVE_DISCOUNT_SORT = 3;
+
+// Classify a mission's scoring "unit" from its name. Order matters: check the more specific
+// units (HR, WIN, K) before the broader ones (HIT, PXP) to avoid misclassifying e.g. a
+// "Hit a Home Run" mission as HIT.
+function classifyMissionUnit(name) {
+  const n = (name || '').toLowerCase();
+  if (/home run|\bhr'?s?\b|\bhrs\b/.test(n)) return 'HR';
+  if (/\bwin(?:s)?\b|\bwon\b/.test(n)) return 'WIN';
+  if (/strikeout|\bk'?s?\b|strike out/.test(n)) return 'K';
+  if (/\bhit(?:s)?\b|\bsingle(?:s)?\b|\bdouble(?:s)?\b|\btriple(?:s)?\b|\bbase hit/.test(n)) return 'HIT';
+  if (/\bpxp\b|program xp|\bxp\b/.test(n)) return 'PXP';
+  return 'UNKNOWN';
+}
+
+// A mission is "passive" if it accumulates just by playing (PXP) rather than requiring the
+// player to specifically target a stat. Everything else is "focused" effort.
+function classifyMissionScope(unit) {
+  return unit === 'PXP' ? 'passive' : 'focused';
+}
+
+// Effort score for one not-yet-complete mission: remaining units weighted by how hard that
+// unit type generally is to get. Returns null (unscored) for unrecognized mission names —
+// those are still shown, just ranked last by their remaining-fraction instead of effort.
+function missionEffort(m) {
+  const remaining = Math.max(0, (m.max || 0) - (m.value || 0));
+  const unit = classifyMissionUnit(m.name);
+  const scope = classifyMissionScope(unit);
+  const weight = EFFORT_WEIGHTS[unit];
+  const unscored = weight == null;
+  const effort = unscored ? null : remaining * weight;
+  return { unit, scope, remaining, effort, unscored };
+}
+
+// A single easing tween for numeric displays — old value → new value over ~500ms, ease-out,
+// rounded to an integer each frame. Skips the animation entirely on first mount (so the page
+// doesn't count up from 0 on initial load).
+function useAnimatedNumber(value) {
+  const [display, setDisplay] = useState(value);
+  const prevRef = useRef(value);
+  const firstRef = useRef(true);
+  const rafRef = useRef(null);
+  useEffect(() => {
+    if (firstRef.current) {
+      firstRef.current = false;
+      prevRef.current = value;
+      setDisplay(value);
+      return;
+    }
+    const from = prevRef.current;
+    const to = value;
+    if (from === to) return;
+    const duration = 500;
+    const start = performance.now();
+    function tick(now) {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(Math.round(from + (to - from) * eased));
+      if (t < 1) {
+        rafRef.current = requestAnimationFrame(tick);
+      } else {
+        prevRef.current = to;
+      }
+    }
+    rafRef.current = requestAnimationFrame(tick);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [value]);
+  return display;
+}
+
+function formatDate(iso) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleDateString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' });
+  } catch(e) { return ''; }
+}
+
+// Relative "Last synced X ago" text for the dashboard freshness indicator.
+function formatRelative(iso) {
+  if (!iso) return '';
+  try {
+    const ms = Date.now() - new Date(iso).getTime();
+    if (ms < 60000) return 'just now';
+    const min = Math.floor(ms / 60000);
+    if (min < 60) return min + 'm ago';
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return hr + 'h ago';
+    return Math.floor(hr / 24) + 'd ago';
+  } catch(e) { return ''; }
+}
+function isStale(iso, days) {
+  if (!iso) return false;
+  try { return (Date.now() - new Date(iso).getTime()) > days * 24 * 60 * 60 * 1000; } catch(e) { return false; }
+}
+
+// ─── History / pace helpers (Stage 3) ──────────────────────────────────────────
+// `history` is the array from GET /history-data: [{ date, teams: {key: pct}, programs: {key: pct} }, ...]
+
+// Tiny inline sparkline — no chart library, just an SVG polyline on a fixed 0-100 scale.
+function Sparkline({ values, color, width, height }) {
+  width = width || 48; height = height || 14;
+  if (!values || values.length < 2) return null;
+  const step = width / (values.length - 1);
+  const points = values.map((v, i) => (i * step) + ',' + (height - (Math.max(0, Math.min(100, v)) / 100) * height)).join(' ');
+  return (
+    <svg width={width} height={height} style={{display:'block',flexShrink:0}}>
+      <polyline points={points} fill="none" stroke={color || 'var(--blue)'} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// Last `days` pct values for one team key, oldest→newest, skipping days with no data for that key.
+function teamHistorySeries(history, teamKey, days) {
+  if (!history || !teamKey) return [];
+  return history
+    .filter(e => e.teams && Object.prototype.hasOwnProperty.call(e.teams, teamKey))
+    .slice(-(days || 14))
+    .map(e => e.teams[teamKey]);
+}
+
+// Average pct-per-day delta over the last up to 7 gaps for one team key. Returns null if there
+// aren't at least 3 data points (per Stage 3 spec: hide projections/pace when too little history).
+function teamPaceDelta(history, teamKey) {
+  const entries = (history || []).filter(e => e.teams && Object.prototype.hasOwnProperty.call(e.teams, teamKey)).slice(-8);
+  if (entries.length < 3) return null;
+  const deltas = [];
+  for (let i = 1; i < entries.length; i++) deltas.push(entries[i].teams[teamKey] - entries[i - 1].teams[teamKey]);
+  return deltas.reduce((a, b) => a + b, 0) / deltas.length;
+}
+
+// Projected completion date for a team currently below 100%, via linear projection of its
+// recent daily pace. Null if pace is flat/negative or there's not enough history yet.
+function projectCompletion(history, teamKey, currentPct) {
+  if (currentPct >= 100) return null;
+  const avgDelta = teamPaceDelta(history, teamKey);
+  if (avgDelta === null || avgDelta <= 0) return null;
+  const daysLeft = Math.ceil((100 - currentPct) / avgDelta);
+  const date = new Date();
+  date.setDate(date.getDate() + daysLeft);
+  return { daysLeft, date };
+}
+
+// Overall pct/day pace across all teams with history, averaged day-over-day (last up to 7 gaps).
+function overallPaceDelta(history) {
+  const daily = (history || [])
+    .map(e => {
+      const vals = Object.values(e.teams || {});
+      if (!vals.length) return null;
+      return vals.reduce((a, b) => a + b, 0) / vals.length;
+    })
+    .filter(v => v !== null)
+    .slice(-8);
+  if (daily.length < 3) return null;
+  const deltas = [];
+  for (let i = 1; i < daily.length; i++) deltas.push(daily[i] - daily[i - 1]);
+  return deltas.reduce((a, b) => a + b, 0) / deltas.length;
+}
+
+// ─── Multi-user (uid) helpers ──────────────────────────────────────────────────
+// Each browser gets an opaque uid so multiple people can share one deployment
+// without their synced data colliding. No uid = legacy/primary user (unscoped KV keys).
+const UID_KEY = 'mlb26_uid';
+
+function getUid() {
+  try {
+    const fromUrl = new URLSearchParams(window.location.search).get('uid');
+    if (fromUrl) { localStorage.setItem(UID_KEY, fromUrl); return fromUrl; }
+    // Friendly path-style link, e.g. https://your-tracker-domain.com/friendname
+    const pathSeg = window.location.pathname.replace(/^\/+|\/+$/g, '');
+    if (pathSeg && /^[a-zA-Z0-9]+$/.test(pathSeg)) {
+      localStorage.setItem(UID_KEY, pathSeg);
+      return pathSeg;
+    }
+    return localStorage.getItem(UID_KEY) || null;
+  } catch(e) { return null; }
+}
+
+function createUid() {
+  const raw = (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36));
+  const uid = raw.replace(/-/g, '').slice(0, 20);
+  try {
+    localStorage.setItem(UID_KEY, uid);
+    const url = new URL(window.location.href);
+    url.searchParams.set('uid', uid);
+    window.history.replaceState({}, '', url);
+  } catch(e) {}
+  return uid;
+}
+
+function uidQs(uid) {
+  return uid ? ('?uid=' + encodeURIComponent(uid)) : '';
+}
+
+// Single sidebar team row — its own component so useAnimatedNumber (a hook) can be called
+// once per team button instance rather than inside a .map() callback.
+function SidebarTeamButton({ team, active, displayPct, onClick }) {
+  const animatedPct = useAnimatedNumber(displayPct);
+  const isComplete = displayPct === 100;
+  const hasProgress = displayPct > 0;
+  return (
+    <button
+      className={`sidebar-btn${active ? ' active' : ''}${isComplete ? ' complete' : hasProgress ? ' has-progress' : ''}`}
+      onClick={onClick}
+    >
+      <span className="dot" style={{background: isComplete ? 'var(--green)' : hasProgress ? team.color : 'var(--border2)'}}></span>
+      {team.name}
+      <span className="sidebar-pct">{animatedPct}%</span>
+    </button>
+  );
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+function App() {
+  const [view, setView] = useState('overview');
+  const [toast, setToast] = useState('');
+  const [uid, setUid] = useState(() => getUid());
+  const [programs, setPrograms] = useState(null);
+  const [programsPrev, setProgramsPrev] = useState(null);
+  const [programsLoading, setProgramsLoading] = useState(false);
+  const [generalPrograms, setGeneralPrograms] = useState(null);
+  const [history, setHistory] = useState([]);
+  // True whenever the most recent fetch round-trip failed (network down, Basic Auth session
+  // expired, server error) — drives the warning banner so a fetch failure isn't mistaken for
+  // "no data synced yet". Cleared as soon as the primary (programs) load succeeds again.
+  const [loadError, setLoadError] = useState(false);
+  // Mobile-only off-canvas nav state. On desktop the sidebar is always visible (this is
+  // simply unused there); on mobile it's a slide-in drawer toggled by the topbar hamburger.
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  // Sets the view and, if the mobile drawer is open, closes it — used by every sidebar
+  // nav/team button so tapping a destination on mobile takes you straight to it.
+  function goTo(v) {
+    setView(v);
+    setMobileNavOpen(false);
+  }
+
+  const showToast = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(''), 3000);
+  };
+
+  function handleCreateTracker() {
+    const newUid = createUid();
+    setPrograms(null);
+    setProgramsPrev(null);
+    setGeneralPrograms(null);
+    setUid(newUid);
+    showToast('Tracker created — install the new bookmarklet below');
+  }
+
+  // Everything derived from a sync (percentages, deltas, sparklines, pace, All Programs) is
+  // reloaded together so the dashboard never shows a mixed old/new state after a sync lands.
+  function reloadAll() {
+    loadPrograms(); loadGeneralPrograms(); loadProgramsPrev(); loadHistory();
+  }
+
+  useEffect(() => { reloadAll(); }, [uid]);
+
+  // While the tab is visible, poll for a newer synced snapshot (e.g. after running the sync
+  // bookmarklet on a different device/tab) and reload automatically when savedAt changes.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      fetch('/programs-data' + uidQs(uid), { cache: 'no-store' })
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (data?.savedAt && data.savedAt !== programs?.savedAt) reloadAll();
+        })
+        .catch(() => {});
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [uid, programs?.savedAt]);
+
+  async function loadPrograms() {
+    setProgramsLoading(true);
+    try {
+      const resp = await fetch('/programs-data' + uidQs(uid), { cache: 'no-store' });
+      if (!resp.ok) { setLoadError(true); return; }
+      const data = await resp.json();
+      setPrograms(data.teams && Object.keys(data.teams).length > 0 ? data : null);
+      setLoadError(false);
+    } catch(e) {
+      setLoadError(true);
+    } finally {
+      setProgramsLoading(false);
+    }
+  }
+
+  async function loadGeneralPrograms() {
+    try {
+      const resp = await fetch('/general-programs-data' + uidQs(uid), { cache: 'no-store' });
+      if (!resp.ok) { setLoadError(true); return; }
+      const data = await resp.json();
+      setGeneralPrograms(data.programs && Object.keys(data.programs).length > 0 ? data : null);
+    } catch(e) { setLoadError(true); }
+  }
+
+  async function loadProgramsPrev() {
+    try {
+      const resp = await fetch('/programs-prev' + uidQs(uid), { cache: 'no-store' });
+      if (!resp.ok) { setLoadError(true); return; }
+      const data = await resp.json();
+      setProgramsPrev(data.teams && Object.keys(data.teams).length > 0 ? data : null);
+    } catch(e) { setLoadError(true); }
+  }
+
+  async function loadHistory() {
+    try {
+      const resp = await fetch('/history-data' + uidQs(uid), { cache: 'no-store' });
+      if (!resp.ok) { setLoadError(true); return; }
+      const data = await resp.json();
+      setHistory(Array.isArray(data.history) ? data.history : []);
+    } catch(e) { setLoadError(true); }
+  }
+
+  // Build a pct map from a programs snapshot: abbr → {main pct, fan pct}
+  function buildPctMap(snapshot, byAbbr) {
+    if (!snapshot?.teams) return {};
+    const map = {};
+    Object.values(snapshot.teams).forEach(t => {
+      const entry = Object.entries(byAbbr).find(([, p]) => p === t);
+      const team = entry ? TEAMS.find(tm => tm.abbr === entry[0]) : TEAMS.find(tm => t.teamName?.includes(tm.name));
+      if (!team) return;
+      const main = t.programs?.find(p => !p.name?.includes('#1 Fan'));
+      const fan = t.programs?.find(p => p.name?.includes('#1 Fan'));
+      map[team.abbr] = { main: main?.pct ?? 0, fan: fan?.pct ?? 0 };
+    });
+    return map;
+  }
+
+  const programsByAbbr = useMemo(() => {
+    if (!programs?.teams) return {};
+    const result = {};
+    Object.values(programs.teams).forEach(t => {
+      if (!t.teamName) return;
+      const match = TEAMS.find(team =>
+        t.teamName === `${team.city} ${team.name}` || t.teamName.includes(team.name)
+      );
+      if (match) result[match.abbr] = t;
+    });
+    return result;
+  }, [programs]);
+
+  // abbr → raw history/teams key (e.g. "al_1") — history entries are keyed the same way the
+  // Worker stores them, so this is needed to look a team's abbr up in the history array.
+  const historyKeyByAbbr = useMemo(() => {
+    if (!programs?.teams) return {};
+    const result = {};
+    Object.entries(programs.teams).forEach(([key, t]) => {
+      if (!t.teamName) return;
+      const match = TEAMS.find(team =>
+        t.teamName === `${team.city} ${team.name}` || t.teamName.includes(team.name)
+      );
+      if (match) result[match.abbr] = key;
+    });
+    return result;
+  }, [programs]);
+
+  // Overall Team Affinity % (combined Team Affinity + #1 Fan average across all teams)
+  const teamAffinityOverallPct = useMemo(() => {
+    const teams = TEAMS.map(team => programsByAbbr[team.abbr]).filter(Boolean);
+    if (!teams.length) return 0;
+    const total = teams.reduce((sum, t) => {
+      const main = t.programs?.find(p => !p.name.includes('#1 Fan'))?.pct ?? 0;
+      const fan = t.programs?.find(p => p.name.includes('#1 Fan'));
+      return sum + (fan ? (main + fan.pct) / 2 : main);
+    }, 0);
+    return Math.round(total / teams.length);
+  }, [programsByAbbr]);
+
+  const currentTeam = TEAMS.find(t => t.abbr === view);
+
+  const generalProgsPct = generalPrograms
+    ? Math.round(Object.values(generalPrograms.programs).filter(p => p.pct === 100).length / Math.max(Object.keys(generalPrograms.programs).length, 1) * 100)
+    : 0;
+  const animatedTaPct = useAnimatedNumber(teamAffinityOverallPct);
+  const animatedGeneralPct = useAnimatedNumber(generalProgsPct);
+
+  return (
+    <div className="app">
+      {/* Mobile-only topbar with hamburger — hidden on desktop via CSS */}
+      <div className="mobile-topbar">
+        <button className="mobile-hamburger" aria-label="Open menu" onClick={() => setMobileNavOpen(true)}>
+          <span></span><span></span><span></span>
+        </button>
+        <div className="logo-title" style={{fontSize:'1rem'}}>The Show 26</div>
+      </div>
+
+      {/* Backdrop, mobile only — tapping it closes the drawer */}
+      {mobileNavOpen && <div className="mobile-backdrop" onClick={() => setMobileNavOpen(false)} />}
+
+      {/* Sidebar */}
+      <div className={`sidebar${mobileNavOpen ? ' open' : ''}`}>
+        <div className="sidebar-logo">
+          <div className="logo-title">The Show 26</div>
+          <div className="logo-sub">Program Tracker</div>
+        </div>
+
+        <div className="sidebar-section">
+          <div className="sidebar-section-label">Navigation</div>
+          <button className={`sidebar-btn${view==='overview'?' active':''}`} onClick={() => goTo('overview')}>
+            <span className="dot" style={{background: view==='overview'?'var(--gold)':'var(--border2)'}}></span>
+            Overview
+          </button>
+          <button className={`sidebar-btn${view==='howto'?' active':''}`} onClick={() => goTo('howto')}>
+            <span className="dot" style={{background: view==='howto'?'var(--gold)':'var(--border2)'}}></span>
+            Sync Data
+          </button>
+          <button className={`sidebar-btn${view==='programs'?' active':''}`} onClick={() => goTo('programs')}>
+            <span className="dot" style={{background: view==='programs'?'var(--blue)':'var(--border2)'}}></span>
+            Team Affinity
+            {programs && <span className="sidebar-pct">{animatedTaPct}%</span>}
+          </button>
+          <button className={`sidebar-btn${view==='general-programs'?' active':''}`} onClick={() => goTo('general-programs')}>
+            <span className="dot" style={{background: view==='general-programs'?'var(--purple)':'var(--border2)'}}></span>
+            All Programs
+            {generalPrograms && <span className="sidebar-pct">{animatedGeneralPct}%</span>}
+          </button>
+        </div>
+
+        {DIVISIONS.map(div => {
+          const divTeams = TEAMS.filter(t => t.div === div);
+          return (
+            <div className="sidebar-section" key={div}>
+              <div className="sidebar-section-label">{div}</div>
+              {divTeams.map(team => {
+                const realData = programsByAbbr[team.abbr];
+                const mainProg = realData?.programs?.find(p => !p.name?.includes('#1 Fan'));
+                const fanProg = realData?.programs?.find(p => p.name?.includes('#1 Fan'));
+                const displayPct = mainProg != null ? (fanProg != null ? Math.round((mainProg.pct + fanProg.pct) / 2) : mainProg.pct) : 0;
+                return (
+                  <SidebarTeamButton
+                    key={team.abbr}
+                    team={team}
+                    active={view === team.abbr}
+                    displayPct={displayPct}
+                    onClick={() => goTo(team.abbr)}
+                  />
+                );
+              })}
+            </div>
+          );
+        })}
+
+      </div>
+
+      {/* Main */}
+      <div className="main">
+        {loadError && (
+          <div style={{background:'rgba(239,68,68,.1)',border:'1px solid var(--red)',borderRadius:8,
+            padding:'10px 14px',marginBottom:16,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+            <div style={{fontSize:'.8rem',color:'var(--text)',lineHeight:1.5,flex:1,minWidth:200}}>
+              <strong style={{color:'var(--red)'}}>⚠ Couldn't reach the server</strong> — showing the last
+              data that loaded. Check your connection, or reload the page to log in again if this
+              deployment is password-protected.
+            </div>
+            <button className="btn btn-ghost" style={{fontSize:'.72rem'}} onClick={reloadAll}>↻ Retry</button>
+          </div>
+        )}
+        {view === 'overview' && <OverviewPanel setView={setView} programs={programs} programsByAbbr={programsByAbbr} programsPrev={programsPrev} buildPctMap={buildPctMap} history={history} historyKeyByAbbr={historyKeyByAbbr} />}
+        {view === 'howto' && <HowToPanel uid={uid} onCreateTracker={handleCreateTracker} />}
+        {view === 'programs' && <ProgramsPanel programs={programs} loading={programsLoading} onReload={loadPrograms} />}
+        {view === 'general-programs' && <GeneralProgramsPanel generalPrograms={generalPrograms} onReload={loadGeneralPrograms} />}
+        {currentTeam && (
+          <TeamPanel
+            team={currentTeam}
+            programData={programsByAbbr[currentTeam.abbr]}
+            history={history}
+            historyKey={historyKeyByAbbr[currentTeam.abbr]}
+          />
+        )}
+      </div>
+
+      {/* Toast */}
+      {toast && (
+        <div style={{position:'fixed',bottom:20,right:20,background:'var(--s3)',border:'1px solid var(--border2)',borderRadius:8,padding:'10px 16px',fontSize:'.82rem',zIndex:1000,maxWidth:280}}>
+          {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Programs Panel ───────────────────────────────────────────────────────────
+function ProgramsPanel({ programs, loading, onReload }) {
+  const [pitchingOnly, setPitchingOnly] = React.useState(false);
+
+  if (loading) return (
+    <div className="page-header"><div className="page-title" style={{color:'var(--muted)'}}>Loading programs...</div></div>
+  );
+  if (!programs?.teams || !Object.keys(programs.teams).length) return (
+    <div>
+      <div className="page-header"><div className="page-title">Team Affinity Programs</div></div>
+      <div style={{padding:'2rem',color:'var(--muted)',fontSize:'.85rem'}}>
+        No program data yet. Run the sync bookmarklet (see "Sync Data" in the sidebar) to pull your progress.
+      </div>
+    </div>
+  );
+
+  const seenNames = new Set();
+  const allTeams = Object.entries(programs.teams)
+    .filter(([, t]) => t.programs?.length && t.teamName)
+    .filter(([, t]) => { if (seenNames.has(t.teamName)) return false; seenNames.add(t.teamName); return true; })
+    .map(([key, t]) => ({ ...t, _key: key }))
+    .sort((a, b) => {
+      const ap = a.programs.find(p => !p.name.includes('#1 Fan'))?.pct ?? 0;
+      const bp = b.programs.find(p => !p.name.includes('#1 Fan'))?.pct ?? 0;
+      const afan = a.programs.find(p => p.name.includes('#1 Fan'))?.pct ?? 0;
+      const bfan = b.programs.find(p => p.name.includes('#1 Fan'))?.pct ?? 0;
+      if (ap === 100 && bp < 100) return 1;
+      if (bp === 100 && ap < 100) return -1;
+      const aCombined = (ap + afan) / 2;
+      const bCombined = (bp + bfan) / 2;
+      return bCombined - aCombined;
+    });
+
+  // When filter active: only open teams with at least one incomplete pitching mission
+  const teamList = pitchingOnly
+    ? allTeams.filter(t => {
+        const pct = t.programs.find(p => !p.name.includes('#1 Fan'))?.pct ?? 0;
+        return pct < 100 && (t.missions || []).some(m => !m.done && isPitchingMission(m.name));
+      })
+    : allTeams;
+
+  const totalComplete = allTeams.filter(t => {
+    const mainPct = t.programs.find(p => !p.name.includes('#1 Fan'))?.pct ?? 0;
+    const fanPct = t.programs.find(p => p.name.includes('#1 Fan'))?.pct ?? 0;
+    return mainPct === 100 && fanPct === 100;
+  }).length;
+
+  return (
+    <div>
+      <div className="page-header" style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:8}}>
+        <div>
+          <div className="page-title">Team Affinity Programs</div>
+          <div style={{fontSize:'.72rem',color:'var(--muted)',marginTop:2}}>
+            {totalComplete}/{allTeams.length} complete · synced {formatDate(programs.savedAt)}
+          </div>
+        </div>
+        <div style={{display:'flex',gap:8,alignItems:'center'}}>
+          <button
+            onClick={() => setPitchingOnly(v => !v)}
+            style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:'.72rem',
+              textTransform:'uppercase',letterSpacing:'.06em',padding:'5px 12px',borderRadius:5,border:'1px solid',cursor:'pointer',
+              background: pitchingOnly ? 'rgba(167,139,250,.15)' : 'transparent',
+              borderColor: pitchingOnly ? 'var(--purple)' : 'var(--border)',
+              color: pitchingOnly ? 'var(--purple)' : 'var(--muted)'}}>
+            ⚾ Pitching Only
+          </button>
+          <button onClick={onReload} style={{background:'var(--s3)',border:'1px solid var(--border2)',borderRadius:6,color:'var(--text)',padding:'5px 12px',cursor:'pointer',fontSize:'.75rem'}}>↻ Refresh</button>
+        </div>
+      </div>
+
+      {pitchingOnly && teamList.length === 0 && (
+        <div style={{padding:'32px 0',textAlign:'center',color:'var(--green)',fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:'1.1rem',letterSpacing:'.05em'}}>
+          All pitching missions complete! 🏆
+        </div>
+      )}
+
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(290px,1fr))',gap:10,padding:'0 1.5rem 1.5rem'}}>
+        {teamList.map((team) => {
+          const main = team.programs.find(p => !p.name.includes('#1 Fan'));
+          const fan = team.programs.find(p => p.name.includes('#1 Fan'));
+          const mainPct = main?.pct ?? 0;
+          const fanPct = fan?.pct ?? 0;
+          const pct = fan ? Math.round((mainPct + fanPct) / 2) : mainPct;
+          const isComplete = pct === 100;
+          const missions = team.missions || [];
+          const visibleMissions = pitchingOnly ? missions.filter(m => !m.done && isPitchingMission(m.name)) : missions;
+
+          return (
+            <div key={team._key} style={{
+              background:'var(--s2)',border:'1px solid',
+              borderColor: isComplete ? 'var(--green)' : pitchingOnly ? 'rgba(167,139,250,.3)' : pct > 0 ? 'var(--border2)' : 'var(--border1)',
+              borderRadius:8,padding:'12px 14px',opacity: isComplete ? 0.65 : 1,
+            }}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:6}}>
+                <div style={{fontWeight:700,fontSize:'.85rem',color: isComplete ? 'var(--green)' : 'var(--text)'}}>
+                  {isComplete ? '✓ ' : ''}{team.teamName || main?.name || '—'}
+                </div>
+                <div style={{fontSize:'.8rem',fontWeight:700,color: isComplete ? 'var(--green)' : pct >= 75 ? 'var(--gold)' : 'var(--text)',flexShrink:0,marginLeft:8}}>
+                  {pct}%
+                </div>
+              </div>
+
+              <div style={{height:3,background:'var(--border1)',borderRadius:2,marginBottom:10,overflow:'hidden'}}>
+                <div style={{height:'100%',width:pct+'%',background: isComplete ? 'var(--green)' : 'linear-gradient(90deg,var(--blue),var(--gold))',transition:'width .3s'}}></div>
+              </div>
+
+              {visibleMissions.length > 0 && (
+                <div style={{marginBottom: fan && !pitchingOnly ? 6 : 0}}>
+                  {visibleMissions.map((m, j) => (
+                    <div key={j} style={{display:'flex',justifyContent:'space-between',alignItems:'center',
+                      fontSize:'.7rem',padding:'2px 0',color: m.done ? 'var(--muted)' : 'var(--text)'}}>
+                      <span style={{color: pitchingOnly ? 'var(--purple)' : m.done ? 'var(--muted)' : 'var(--text)'}}>{m.done ? '✓' : '○'} {m.name}</span>
+                      <span style={{color: m.done ? 'var(--green)' : m.value/m.max >= 0.8 ? 'var(--gold)' : 'var(--muted)',flexShrink:0,marginLeft:8}}>
+                        {m.value}/{m.max}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {fan && !pitchingOnly && (
+                <div style={{borderTop:'1px solid var(--border1)',marginTop:6,paddingTop:5}}>
+                  <div style={{display:'flex',justifyContent:'space-between',fontSize:'.68rem',color:'var(--muted)',marginBottom: (team.fanMissions||[]).length ? 3 : 0}}>
+                    <span>#1 Fan</span>
+                    <span style={{color: fan.pct === 100 ? 'var(--green)' : 'inherit'}}>{fan.pct}%</span>
+                  </div>
+                  {(team.fanMissions||[]).map((m, j) => (
+                    <div key={j} style={{display:'flex',justifyContent:'space-between',alignItems:'center',
+                      fontSize:'.68rem',padding:'1px 0',color: m.done ? 'var(--muted)' : 'var(--text)'}}>
+                      <span style={{color: m.done ? 'var(--muted)' : 'var(--purple)'}}>{m.done ? '✓' : '○'} {m.name}</span>
+                      <span style={{color: m.done ? 'var(--green)' : m.value/m.max >= 0.8 ? 'var(--gold)' : 'var(--muted)',flexShrink:0,marginLeft:8}}>
+                        {m.value}/{m.max}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── General Programs Panel ───────────────────────────────────────────────────
+function GeneralProgramsPanel({ generalPrograms, onReload }) {
+  useEffect(() => { onReload(); }, []); // always fetch fresh on mount
+  const [pitchingOnly, setPitchingOnly] = React.useState(false);
+
+  if (!generalPrograms) return (
+    <div>
+      <div className="page-header"><div className="page-title">All Programs</div></div>
+      <div style={{color:'var(--muted)',fontSize:'.85rem',padding:'20px 0'}}>
+        No data yet — run a sync to load program progress.
+        <button className="btn btn-ghost" style={{marginLeft:12}} onClick={onReload}>Reload</button>
+      </div>
+    </div>
+  );
+
+  const allProgs = Object.values(generalPrograms.programs).map(p => ({
+    ...p,
+    name: p.name.split('/').pop().trim().replace(/\s+Program$/, ' Program'),
+  })).sort((a, b) => {
+    const aDone = a.pct === 100, bDone = b.pct === 100;
+    if (aDone !== bDone) return aDone ? 1 : -1;
+    return b.pct - a.pct;
+  });
+
+  // When filter is active: open programs that have at least one incomplete pitching mission
+  const progs = pitchingOnly
+    ? allProgs.filter(p => p.pct < 100 && (p.missions || []).some(m => !m.done && isPitchingMission(m.name)))
+    : allProgs;
+
+  return (
+    <div>
+      <div className="page-header">
+        <div className="page-title">All Programs</div>
+        <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+          <button
+            onClick={() => setPitchingOnly(v => !v)}
+            style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:'.72rem',
+              textTransform:'uppercase',letterSpacing:'.06em',padding:'5px 12px',borderRadius:5,border:'1px solid',cursor:'pointer',
+              background: pitchingOnly ? 'rgba(167,139,250,.15)' : 'transparent',
+              borderColor: pitchingOnly ? 'var(--purple)' : 'var(--border)',
+              color: pitchingOnly ? 'var(--purple)' : 'var(--muted)'}}>
+            ⚾ Pitching Only
+          </button>
+          <div style={{fontSize:'.72rem',color:'var(--muted)'}}>synced {formatDate(generalPrograms.savedAt)}</div>
+          <button className="btn btn-ghost" style={{fontSize:'.72rem'}} onClick={onReload}>↻ Reload</button>
+        </div>
+      </div>
+
+      {!pitchingOnly && (
+        <div className="overview-grid" style={{marginBottom:20}}>
+          <div className="stat-tile">
+            <div className="stat-tile-val">{allProgs.length}</div>
+            <div className="stat-tile-label">Programs</div>
+          </div>
+          <div className="stat-tile">
+            <div className="stat-tile-val green">{allProgs.filter(p => p.pct === 100).length}</div>
+            <div className="stat-tile-label">Complete</div>
+          </div>
+          <div className="stat-tile">
+            <div className="stat-tile-val" style={{color:'var(--purple)'}}>{allProgs.reduce((s,p)=>s+(p.missions||[]).filter(m=>m.done).length,0)}</div>
+            <div className="stat-tile-label">Missions Done</div>
+          </div>
+          <div className="stat-tile">
+            <div className="stat-tile-val" style={{color:'var(--gold)'}}>{Math.round(allProgs.reduce((s,p)=>s+p.pct,0)/Math.max(allProgs.length,1))}%</div>
+            <div className="stat-tile-label">Avg Progress</div>
+          </div>
+        </div>
+      )}
+
+      {pitchingOnly && progs.length === 0 && (
+        <div style={{padding:'32px 0',textAlign:'center',color:'var(--green)',fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:'1.1rem',letterSpacing:'.05em'}}>
+          All pitching missions complete! 🏆
+        </div>
+      )}
+
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(320px,1fr))',gap:12}}>
+        {progs.map((prog, i) => {
+          const isComplete = prog.pct === 100;
+          const missions = prog.missions || [];
+          const visibleMissions = pitchingOnly ? missions.filter(m => !m.done && isPitchingMission(m.name)) : missions;
+          return (
+            <div key={i} style={{background:'var(--s1)',border:`1px solid ${isComplete?'rgba(34,197,94,.3)':'var(--border)'}`,borderRadius:10,padding:'14px 16px'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
+                <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:'1rem',flex:1,marginRight:8,lineHeight:1.2}}>
+                  {prog.name}
+                </div>
+                <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:'.85rem',
+                  color:isComplete?'var(--green)':prog.pct>=75?'var(--gold)':'var(--text)',
+                  background:'var(--s3)',padding:'3px 8px',borderRadius:4,border:'1px solid var(--border2)',flexShrink:0}}>
+                  {isComplete ? '✓ Done' : `${prog.pct}%`}
+                </div>
+              </div>
+
+              <div style={{height:4,background:'var(--border)',borderRadius:2,overflow:'hidden',marginBottom:10}}>
+                <div style={{height:'100%',width:prog.pct+'%',background:isComplete?'var(--green)':'linear-gradient(90deg,var(--blue),var(--purple))',transition:'width .3s'}}></div>
+              </div>
+
+              {visibleMissions.length > 0 && (
+                <div style={{display:'flex',flexDirection:'column',gap:3}}>
+                  {visibleMissions.map((m, j) => {
+                    const mPct = m.max > 0 ? Math.min(100, Math.round(m.value/m.max*100)) : 0;
+                    return (
+                      <div key={j}>
+                        <div style={{display:'flex',justifyContent:'space-between',fontSize:'.72rem',color:m.done?'var(--muted)':'var(--text)',marginBottom:m.max>1?2:0}}>
+                          <span style={{color: pitchingOnly ? 'var(--purple)' : 'inherit'}}>{m.done ? '✓' : '○'} {m.name}</span>
+                          <span style={{color:m.done?'var(--green)':mPct>=80?'var(--gold)':'var(--muted)',marginLeft:8,flexShrink:0}}>{m.value}/{m.max}</span>
+                        </div>
+                        {m.max > 1 && !m.done && (
+                          <div style={{height:3,background:'var(--border)',borderRadius:2,overflow:'hidden',marginBottom:2}}>
+                            <div style={{height:'100%',width:mPct+'%',background: pitchingOnly ? 'var(--purple)' : 'var(--purple)',transition:'width .3s'}}></div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── Overview Panel ───────────────────────────────────────────────────────────
+function OverviewPanel({ setView, programs, programsByAbbr, programsPrev, buildPctMap, history, historyKeyByAbbr }) {
+  const progTeams = programs ? Object.values(programs.teams) : [];
+  const seen = new Set();
+  const uniqueProgTeams = progTeams.filter(t => {
+    if (!t.teamName || seen.has(t.teamName)) return false;
+    seen.add(t.teamName); return true;
+  });
+  const teamsComplete = uniqueProgTeams.filter(t => {
+    const mainPct = t.programs?.find(p => !p.name?.includes('#1 Fan'))?.pct ?? 0;
+    const fanPct = t.programs?.find(p => p.name?.includes('#1 Fan'))?.pct ?? 0;
+    return mainPct === 100 && fanPct === 100;
+  }).length;
+  const totalMissionsFromData = uniqueProgTeams.reduce((sum, t) => sum + (t.missions?.length || 0) + (t.fanMissions?.length || 0), 0);
+  const doneMissionsFromData = uniqueProgTeams.reduce((sum, t) => sum + (t.missions?.filter(m => m.done).length || 0) + (t.fanMissions?.filter(m => m.done).length || 0), 0);
+  const overallPct = totalMissionsFromData > 0 ? Math.round(doneMissionsFromData / totalMissionsFromData * 100) : 0;
+  const useScraped = uniqueProgTeams.length > 0;
+
+  const displayPct = useScraped ? overallPct : 0;
+  const displayDone = useScraped ? teamsComplete : 0;
+  const displayMissions = useScraped ? doneMissionsFromData : 0;
+  const displayRemaining = useScraped ? totalMissionsFromData - doneMissionsFromData : 0;
+
+  // Per-team pct map
+  const teamPctMap = useMemo(() => {
+    const map = {};
+    TEAMS.forEach(team => {
+      const realData = programsByAbbr[team.abbr];
+      const mainProg = realData?.programs?.find(p => !p.name?.includes('#1 Fan'));
+      const fanProg = realData?.programs?.find(p => p.name?.includes('#1 Fan'));
+      map[team.abbr] = { main: mainProg?.pct ?? 0, fan: fanProg?.pct ?? 0 };
+    });
+    return map;
+  }, [programsByAbbr]);
+
+  const prevPctMap = useMemo(() => buildPctMap ? buildPctMap(programsPrev, programsByAbbr) : {}, [programsPrev, programsByAbbr]);
+
+  // Division averages
+  const divProgress = useMemo(() => DIVISIONS.map(div => {
+    const divTeams = TEAMS.filter(t => t.div === div);
+    const pcts = divTeams.map(t => {
+      const p = teamPctMap[t.abbr];
+      if (!p) return 0;
+      return p.fan ? Math.round((p.main + p.fan) / 2) : p.main;
+    });
+    const avgPct = Math.round(pcts.reduce((a, b) => a + b, 0) / divTeams.length);
+    const done = pcts.filter(p => p === 100).length;
+    return { div, avgPct, done, total: divTeams.length };
+  }), [teamPctMap]);
+
+  // Effort-ranked "What's Next" list — cheapest-effort missions first, instead of just
+  // closest-to-done. See missionEffort() for the scoring model.
+  const [unitFilter, setUnitFilter] = React.useState('ALL'); // ALL | K | HIT | HR | PXP
+  const [showPassive, setShowPassive] = React.useState(false);
+
+  const whatsNext = useScraped ? uniqueProgTeams
+    .flatMap(t => {
+      const entry = Object.entries(programsByAbbr).find(([, p]) => p === t);
+      const team = entry ? TEAMS.find(tm => tm.abbr === entry[0]) : TEAMS.find(tm => t.teamName?.includes(tm.name));
+      if (!team) return [];
+      const taItems = (t.missions || []).map(m => ({ m, program: 'Team Affinity' }));
+      const fanItems = (t.fanMissions || []).map(m => ({ m, program: '#1 Fan' }));
+      return [...taItems, ...fanItems]
+        .filter(({ m }) => !m.done && m.max > 1 && (m.value ?? 0) < m.max)
+        .map(({ m, program }) => {
+          const { unit, scope, effort, unscored, remaining } = missionEffort(m);
+          const pct = Math.round(m.value / m.max * 100);
+          const sortKey = unscored
+            ? 1e9 + (remaining / Math.max(m.max, 1))
+            : effort * (scope === 'passive' ? PASSIVE_DISCOUNT_SORT : 1);
+          return { team, missionName: m.name, value: m.value, max: m.max, remaining, pct, program, unit, scope, effort, unscored, sortKey };
+        });
+    })
+    .filter(item => unitFilter === 'ALL' ? (showPassive || item.scope === 'focused') : item.unit === unitFilter)
+    .sort((a, b) => a.sortKey - b.sortKey)
+    .slice(0, 15)
+  : [];
+
+  const UNIT_CHIPS = [
+    { id: 'ALL', label: 'All' },
+    { id: 'K', label: 'Ks' },
+    { id: 'HIT', label: 'Hits' },
+    { id: 'HR', label: 'HRs' },
+    { id: 'PXP', label: 'PXP' },
+  ];
+
+  const ringColor = displayPct === 100 ? 'var(--green)' : displayPct >= 75 ? 'var(--gold)' : 'var(--blue)';
+  const ringTextColor = displayPct === 100 ? 'var(--green)' : displayPct >= 75 ? 'var(--gold)' : 'var(--text)';
+
+  // Overall XP/day pace across all teams with history (Stage 3) — hidden if too little data.
+  const pace = useMemo(() => overallPaceDelta(history), [history]);
+
+  const animatedDisplayPct = useAnimatedNumber(displayPct);
+  const animatedDone = useAnimatedNumber(displayDone);
+  const animatedMissions = useAnimatedNumber(displayMissions);
+  const animatedRemaining = useAnimatedNumber(displayRemaining);
+  const animatedTotal = useAnimatedNumber(totalMissionsFromData);
+
+  return (
+    <div>
+      <div className="page-header">
+        <div className="page-title">Program Overview</div>
+        {programs && (
+          <div style={{fontSize:'.72rem',color: isStale(programs.savedAt, 3) ? 'var(--gold)' : 'var(--muted)'}}>
+            Last synced {formatRelative(programs.savedAt)} ({formatDate(programs.savedAt)})
+            {pace !== null && (
+              <span style={{marginLeft:8,color:'var(--muted)'}}>
+                · Pace: {pace > 0 ? '+' : ''}{pace.toFixed(1)}%/day
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Hero — big ring + key stats */}
+      <div className="hero-section animate-in">
+        <div className="ring-wrap" style={{flexShrink:0}}>
+          <SVGRing size={148} pct={displayPct} color={ringColor} strokeWidth={10} />
+          <div className="ring-label">
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:'2rem',lineHeight:1,color:ringTextColor}}>
+              {animatedDisplayPct}%
+            </div>
+            <div style={{fontSize:'.52rem',textTransform:'uppercase',letterSpacing:'.1em',color:'var(--muted)',marginTop:2}}>overall</div>
+          </div>
+        </div>
+        <div className="hero-stats">
+          <div className="hero-stat">
+            <div className="hero-val" style={{color:'var(--green)'}}>{animatedDone}<span style={{fontSize:'1rem',color:'var(--muted)'}}>/{TEAMS.length}</span></div>
+            <div className="hero-label">Teams Complete</div>
+          </div>
+          <div className="hero-stat">
+            <div className="hero-val" style={{color:'var(--blue)'}}>{animatedMissions}</div>
+            <div className="hero-label">Missions Done</div>
+          </div>
+          <div className="hero-stat">
+            <div className="hero-val" style={{color:'var(--purple)'}}>{animatedRemaining}</div>
+            <div className="hero-label">Missions Left</div>
+          </div>
+          <div className="hero-stat">
+            <div className="hero-val" style={{color:'var(--gold)'}}>{animatedTotal}</div>
+            <div className="hero-label">Total Missions</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Division rings */}
+      <div className="section-title">By Division</div>
+      <div className="div-rings" style={{marginBottom:24}}>
+        {divProgress.map((d, i) => {
+          const c = DIV_COLORS[d.div];
+          const isAL = d.div.startsWith('AL');
+          return (
+            <div key={d.div} className="div-ring-card animate-in" style={{animationDelay:`${i*0.06}s`,borderColor:d.avgPct>0?`${c}33`:'var(--border)'}}>
+              <div className="ring-wrap">
+                <SVGRing size={60} pct={d.avgPct} color={c} strokeWidth={5} />
+                <div className="ring-label" style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:'.8rem',color:c}}>
+                  {d.avgPct}%
+                </div>
+              </div>
+              <div className="div-ring-name" style={{color:c}}>{d.div}</div>
+              <div className="div-ring-sub">{d.done}/{d.total} done</div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* 30-team grid */}
+      <div className="section-title">All 30 Teams</div>
+      <div className="team-grid">
+        {TEAMS.map((team, i) => {
+          const { main: pct, fan: fanPct } = teamPctMap[team.abbr] || { main: 0, fan: 0 };
+          const prevPct = prevPctMap[team.abbr]?.main ?? null;
+          const delta = prevPct !== null ? pct - prevPct : null;
+          const sparkVals = teamHistorySeries(history, historyKeyByAbbr[team.abbr], 14);
+          return (
+            <TeamTile
+              key={team.abbr}
+              team={team}
+              pct={pct}
+              fanPct={fanPct}
+              delta={delta}
+              sparkVals={sparkVals}
+              animDelay={`${i * 0.022}s`}
+              onClick={() => setView(team.abbr)}
+            />
+          );
+        })}
+      </div>
+
+      {/* What's Next — effort-ranked missions, cheapest first */}
+      {useScraped && whatsNext.length > 0 && (
+        <>
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12,flexWrap:'wrap'}}>
+            <div className="section-title" style={{marginBottom:0}}>What's Next</div>
+            <div style={{display:'flex',gap:4,marginLeft:'auto',flexWrap:'wrap'}}>
+              {UNIT_CHIPS.map(chip => (
+                <button key={chip.id} onClick={() => setUnitFilter(chip.id)}
+                  style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:'.68rem',
+                    textTransform:'uppercase',letterSpacing:'.06em',padding:'4px 10px',borderRadius:4,border:'1px solid',cursor:'pointer',minHeight:28,
+                    background: unitFilter===chip.id ? 'rgba(232,200,74,.12)' : 'transparent',
+                    borderColor: unitFilter===chip.id ? 'var(--gold)' : 'var(--border)',
+                    color: unitFilter===chip.id ? 'var(--gold)' : 'var(--muted)'}}>
+                  {chip.label}
+                </button>
+              ))}
+              <button onClick={() => setShowPassive(v => !v)}
+                style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:'.68rem',
+                  textTransform:'uppercase',letterSpacing:'.06em',padding:'4px 10px',borderRadius:4,border:'1px solid',cursor:'pointer',minHeight:28,
+                  background: showPassive ? 'rgba(167,139,250,.12)' : 'transparent',
+                  borderColor: showPassive ? 'var(--purple)' : 'var(--border)',
+                  color: showPassive ? 'var(--purple)' : 'var(--muted)'}}>
+                {showPassive ? '✓ ' : ''}Show Passive
+              </button>
+            </div>
+          </div>
+          <div className="urgency-list">
+            {whatsNext.map((item, i) => (
+              <div key={i} className="urgency-row animate-in" style={{borderLeftColor:item.team.color,animationDelay:`${i*0.03}s`}} onClick={() => setView(item.team.abbr)}>
+                <div className="urgency-team" style={{color:item.team.color}}>{item.team.city} {item.team.name}</div>
+                <div className="urgency-mission">
+                  {item.program === '#1 Fan' && <span style={{color:'var(--purple)',fontSize:'.6rem',fontWeight:700,marginRight:5}}>#1 FAN</span>}
+                  {item.missionName}
+                  <span style={{marginLeft:6,fontSize:'.6rem',fontWeight:700,textTransform:'uppercase',letterSpacing:'.04em',
+                    color: item.scope === 'passive' ? 'var(--muted2)' : 'var(--blue)'}}>
+                    {item.scope === 'passive' ? '· Passive' : '· Focused'}
+                  </span>
+                  {item.unscored && <span style={{marginLeft:6,fontSize:'.6rem',color:'var(--muted2)'}}>· unscored</span>}
+                </div>
+                <div className="urgency-bar"><div className="urgency-bar-fill" style={{width:item.pct+'%',background:item.program==='#1 Fan'?'var(--purple)':item.team.color}}/></div>
+                <div className="urgency-remaining" style={{color:item.pct>=90?'var(--green)':item.pct>=70?'var(--gold)':'var(--text)'}}>{item.value}/{item.max}</div>
+                <div className="urgency-pct">{item.pct}%</div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      {whatsNext.length === 0 && useScraped && (
+        <div style={{textAlign:'center',padding:'40px 0',color:'var(--green)',fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:'1.2rem',letterSpacing:'.05em'}}>
+          ALL MISSIONS COMPLETE 🏆
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Single team tile in the Overview grid. Its own component so useAnimatedNumber can be
+// called per-instance, and so the adaptive primary-metric logic stays in one place: once
+// Team Affinity hits 100%, the #1 Fan pct becomes the headline number and TA collapses to a
+// small "TA ✓" badge instead of a secondary bar.
+function TeamTile({ team, pct, fanPct, delta, sparkVals, animDelay, onClick }) {
+  const taComplete = pct === 100;
+  const primaryPct = taComplete ? fanPct : pct;
+  const animatedPrimaryPct = useAnimatedNumber(primaryPct);
+  const primaryComplete = primaryPct === 100;
+  const isNear = primaryPct >= 75 && !primaryComplete;
+  const pctColor = primaryComplete ? 'var(--green)' : primaryPct >= 75 ? 'var(--gold)' : primaryPct > 0 ? 'var(--text)' : 'var(--muted)';
+  return (
+    <div
+      className="team-tile animate-in"
+      style={{
+        animationDelay: animDelay,
+        borderColor: primaryComplete ? 'rgba(34,197,94,.45)' : isNear ? `${team.color}55` : 'var(--border)',
+        boxShadow: primaryComplete ? '0 0 18px rgba(34,197,94,.14)' : isNear ? `0 0 14px ${team.color}1a` : 'none',
+      }}
+      onClick={onClick}
+    >
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+        <div className="team-tile-abbr" style={{color: taComplete ? 'var(--green)' : team.color}}>{team.abbr}</div>
+        {delta !== null && delta !== 0 && (
+          <div style={{fontSize:'.55rem',fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,
+            color: delta > 0 ? 'var(--green)' : 'var(--red)',lineHeight:1,marginTop:2}}>
+            {delta > 0 ? '+' : ''}{delta}%
+          </div>
+        )}
+      </div>
+      <div className="team-tile-city">{team.city}</div>
+      <div className="team-tile-pct" style={{color: pctColor}}>
+        {primaryComplete ? '✓ Done' : primaryPct > 0 ? `${animatedPrimaryPct}%` : '—'}
+      </div>
+      <div className="team-tile-bar">
+        <div className="team-tile-fill" style={{width: primaryPct+'%', background: primaryComplete ? 'var(--green)' : `linear-gradient(90deg,${team.color}99,${team.color})`}} />
+      </div>
+      {taComplete ? (
+        <div style={{marginTop:4,fontSize:'.55rem',fontWeight:700,letterSpacing:'.04em',color:'var(--green)'}}>TA ✓</div>
+      ) : fanPct > 0 && (
+        <div style={{marginTop:4,display:'flex',alignItems:'center',gap:4}}>
+          <div style={{flex:1,height:2,background:'var(--border2)',borderRadius:1,overflow:'hidden'}}>
+            <div style={{height:'100%',width:fanPct+'%',background:'var(--purple)',borderRadius:1}} />
+          </div>
+          <div style={{fontSize:'.5rem',color:'var(--muted2)',flexShrink:0,fontFamily:"'Barlow Condensed',sans-serif"}}>#{fanPct}%</div>
+        </div>
+      )}
+      {sparkVals.length >= 2 && (
+        <div style={{marginTop:4}}>
+          <Sparkline values={sparkVals} color={primaryComplete ? 'var(--green)' : team.color} width={100} height={16} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Team Panel ───────────────────────────────────────────────────────────────
+function TeamPanel({ team, programData, history, historyKey }) {
+  const mainProg = programData?.programs?.find(p => !p.name?.includes('#1 Fan'));
+  const fanProg = programData?.programs?.find(p => p.name?.includes('#1 Fan'));
+  const scrapedMissions = programData?.missions || [];
+  const fanMissions = programData?.fanMissions || [];
+  const pct = mainProg?.pct ?? 0;
+  const isComplete = pct === 100;
+
+  const sparkVals = useMemo(() => teamHistorySeries(history, historyKey, 14), [history, historyKey]);
+  const projection = useMemo(() => projectCompletion(history, historyKey, pct), [history, historyKey, pct]);
+
+  return (
+    <div>
+      <div className="page-header">
+        <div className="page-title">
+          <span className="team-color-accent" style={{background:team.color}}></span>
+          {team.city} {team.name}
+        </div>
+        <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+          {sparkVals.length >= 2 && <Sparkline values={sparkVals} color={team.color} width={70} height={20} />}
+          {programData && (
+            <div style={{fontSize:'.78rem',fontWeight:700,color: isComplete?'var(--green)':pct>=75?'var(--gold)':'var(--text)',background:'var(--s3)',padding:'4px 10px',borderRadius:5,border:'1px solid var(--border2)'}}>
+              {isComplete ? '✓ Complete' : `${pct}% done`}
+            </div>
+          )}
+        </div>
+      </div>
+      {projection && (
+        <div style={{fontSize:'.72rem',color:'var(--muted)',marginTop:-8,marginBottom:16}}>
+          At recent pace, projected to finish Team Affinity in ~{projection.daysLeft} day{projection.daysLeft === 1 ? '' : 's'}
+          {' '}({formatDate(projection.date.toISOString())})
+        </div>
+      )}
+
+      {/* Live program progress from theshow.com */}
+      {programData ? (
+        <div style={{marginBottom:20}}>
+          {mainProg && (
+            <div style={{marginBottom:8}}>
+              <div style={{display:'flex',justifyContent:'space-between',fontSize:'.75rem',color:'var(--muted)',marginBottom:4}}>
+                <span>{mainProg.name}</span><span>{pct}%</span>
+              </div>
+              <div style={{height:4,background:'var(--border)',borderRadius:2,overflow:'hidden',marginBottom:12}}>
+                <div style={{height:'100%',width:pct+'%',background:isComplete?'var(--green)':'linear-gradient(90deg,var(--blue),var(--gold))',transition:'width .3s'}}></div>
+              </div>
+            </div>
+          )}
+          <div className="section-title">Mission Progress</div>
+          <div className="missions-grid">
+            {scrapedMissions.map((m, i) => {
+              const mPct = m.max > 0 ? Math.min(100, Math.round(m.value / m.max * 100)) : 0;
+              return (
+                <div key={i} className={`mission-card${m.done?' done':''}`}>
+                  <div className="mission-top">
+                    <div className="mission-info" style={{flex:1}}>
+                      <div className="mission-name">{m.name}</div>
+                      <div className="mission-type">{m.done ? 'Complete' : `${m.value} / ${m.max}`}</div>
+                    </div>
+                    <div className={`mission-check${m.done?' done':''}`}>
+                      {m.done && <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="white" strokeWidth="2"><polyline points="1.5,5 4,7.5 8.5,2.5"/></svg>}
+                    </div>
+                  </div>
+                  {m.max > 1 && (
+                    <div className="progress-section">
+                      <div className="prog-track">
+                        <div className="prog-fill" style={{width:mPct+'%',background:m.done?'var(--green)':team.color}}></div>
+                      </div>
+                      <div className="prog-nums">{m.value}/{m.max}</div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {fanProg && (
+            <div style={{marginTop:16,background:'var(--s2)',border:'1px solid var(--border)',borderRadius:8,padding:'12px 14px'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+                <div>
+                  <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:'.9rem',color:'var(--purple)'}}>
+                    #1 Fan Program
+                  </div>
+                  <div style={{fontSize:'.68rem',color:'var(--muted)',marginTop:1}}>Play games using {team.name} cards</div>
+                </div>
+                <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:'1.3rem',
+                  color: fanProg.pct===100?'var(--green)':fanProg.pct>=50?'var(--purple)':'var(--muted)'}}>
+                  {fanProg.pct}%
+                </div>
+              </div>
+              <div style={{height:5,background:'var(--border)',borderRadius:3,overflow:'hidden'}}>
+                <div style={{height:'100%',width:fanProg.pct+'%',background:fanProg.pct===100?'var(--green)':'var(--purple)',transition:'width .8s ease',borderRadius:3}} />
+              </div>
+              {fanMissions.length > 0 && (
+                <div style={{marginTop:10}}>
+                  {fanMissions.map((m, i) => {
+                    const mPct = m.max > 0 ? Math.min(100, Math.round(m.value / m.max * 100)) : 0;
+                    return (
+                      <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',
+                        fontSize:'.72rem',padding:'3px 0',color: m.done ? 'var(--muted)' : 'var(--text)'}}>
+                        <span style={{display:'flex',alignItems:'center',gap:6}}>
+                          <span className={`mission-check${m.done?' done':''}`} style={{width:14,height:14,flexShrink:0}}>
+                            {m.done && <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="white" strokeWidth="2"><polyline points="1.5,5 4,7.5 8.5,2.5"/></svg>}
+                          </span>
+                          {m.name}
+                        </span>
+                        <span style={{color: m.done ? 'var(--green)' : mPct >= 80 ? 'var(--gold)' : 'var(--muted)',flexShrink:0,marginLeft:8}}>
+                          {m.value}/{m.max}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{padding:'1rem',color:'var(--muted)',fontSize:'.85rem',marginBottom:16}}>
+          No program data yet — run a sync to load live progress.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── How To Panel ─────────────────────────────────────────────────────────────
+const SYNC_KEY_STORAGE = 'mlb26_synckey';
+
+function HowToPanel({ uid, onCreateTracker }) {
+  const origin = window.location.origin;
+  const uidParam = uid ? ('uid=' + encodeURIComponent(uid) + '&') : '';
+  const personalUrl = uid ? `${origin}/?uid=${encodeURIComponent(uid)}` : origin + '/';
+
+  // The sync key (if this deployment has one configured) is never embedded in the served
+  // /sync.js — instead we learn it from /config (revealed only if Basic Auth already gated
+  // this request) or fall back to a key the user pasted in once, stored in localStorage.
+  const [config, setConfig] = useState(null);
+  const [pastedKey, setPastedKey] = useState(() => {
+    try { return localStorage.getItem(SYNC_KEY_STORAGE) || ''; } catch(e) { return ''; }
+  });
+  const [keyInput, setKeyInput] = useState('');
+
+  useEffect(() => {
+    fetch('/config', { cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null)
+      .then(setConfig)
+      .catch(() => setConfig(null));
+  }, []);
+
+  const effectiveKey = (config && config.syncKey) || pastedKey || '';
+  const needsPastedKey = !!(config && config.syncKeyRequired && !config.syncKey);
+  const missingKey = !!(config && config.syncKeyRequired && !effectiveKey);
+
+  const bookmarklet = `javascript:(function(){window.__MLB26_SYNC_KEY=${JSON.stringify(effectiveKey)};var s=document.createElement('script');s.src='${origin}/sync.js?${uidParam}t='+Date.now();document.body.appendChild(s);})();`;
+
+  function saveKey() {
+    const trimmed = keyInput.trim();
+    if (!trimmed) return;
+    try { localStorage.setItem(SYNC_KEY_STORAGE, trimmed); } catch(e) {}
+    setPastedKey(trimmed);
+    setKeyInput('');
+  }
+
+  const [copied, setCopied] = useState(false);
+  const [urlCopied, setUrlCopied] = useState(false);
+  function copy() {
+    navigator.clipboard.writeText(bookmarklet).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
+  }
+  function copyUrl() {
+    navigator.clipboard.writeText(personalUrl).then(() => { setUrlCopied(true); setTimeout(() => setUrlCopied(false), 2000); });
+  }
+
+  return (
+    <div>
+      <div className="page-header">
+        <div className="page-title">How to Sync Your Progress</div>
+      </div>
+
+      <div style={{maxWidth:680}}>
+        <div style={{fontSize:'.84rem',color:'#b0b8c8',lineHeight:1.6,marginBottom:20}}>
+          Sync works via a <strong style={{color:'var(--text)'}}>bookmarklet</strong> — a one-click bookmark that runs in the
+          background on any mlb26.theshow.com page. No extension install needed. One click pulls your entire Team Affinity,
+          #1 Fan, and other program progress and pushes it here automatically.
+        </div>
+
+        {missingKey && (
+          <div style={{background:'rgba(239,68,68,.1)',border:'1px solid var(--red)',borderRadius:8,padding:'12px 14px',marginBottom:16}}>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:'.85rem',color:'var(--red)',marginBottom:4}}>
+              ⚠ Sync key required
+            </div>
+            <div style={{fontSize:'.78rem',color:'var(--muted)',lineHeight:1.6}}>
+              This deployment requires a sync key, but this browser doesn't have one yet. Ask whoever runs this
+              deployment for the key and paste it below — the bookmarklet won't work until then.
+            </div>
+          </div>
+        )}
+
+        {needsPastedKey && (
+          <div style={{background:'var(--s2)',border:'1px solid var(--border2)',borderRadius:8,padding:'14px 16px',marginBottom:16}}>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:'.85rem',marginBottom:6}}>
+              Paste your sync key
+            </div>
+            <div style={{fontSize:'.76rem',color:'var(--muted)',lineHeight:1.6,marginBottom:8}}>
+              This deployment doesn't have Basic Auth set up, so the key can't be handed to you automatically.
+              Paste it here once — it'll be saved in this browser and baked into your bookmarklet below.
+            </div>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+              <input
+                type="text"
+                value={keyInput}
+                onChange={e => setKeyInput(e.target.value)}
+                placeholder={pastedKey ? 'Key saved — paste a new one to replace it' : 'Paste sync key here'}
+                style={{flex:1,minWidth:200,background:'var(--s3)',border:'1px solid var(--border2)',borderRadius:5,color:'var(--text)',padding:'6px 10px',fontSize:'.78rem',fontFamily:'monospace'}}
+              />
+              <button className="btn btn-gold" style={{fontSize:'.75rem'}} onClick={saveKey}>Save Key</button>
+            </div>
+          </div>
+        )}
+
+        {/* Multi-user profile section */}
+        <div style={{background:'var(--s2)',border:'1px solid var(--border2)',borderRadius:8,padding:'14px 16px',marginBottom:24}}>
+          {uid ? (
+            <>
+              <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:'.9rem',marginBottom:4,color:'var(--gold)'}}>
+                Your tracker ID: <span style={{fontFamily:'monospace',fontSize:'.8rem',color:'var(--text)'}}>{uid}</span>
+              </div>
+              <div style={{fontSize:'.78rem',color:'var(--muted)',lineHeight:1.6,marginBottom:8}}>
+                This browser is synced to your own separate data. On another browser or device, open your personal tracker
+                link below (or just log back in from a browser where it's already bookmarked) so it keeps using your ID.
+              </div>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+                <code style={{background:'var(--s3)',padding:'4px 8px',borderRadius:4,fontSize:'.72rem',wordBreak:'break-all'}}>{personalUrl}</code>
+                <button className="btn btn-ghost" style={{fontSize:'.72rem'}} onClick={copyUrl}>{urlCopied ? '✓ Copied!' : 'Copy Link'}</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:'.9rem',marginBottom:4,color:'var(--text)'}}>
+                Sharing this tracker with someone else?
+              </div>
+              <div style={{fontSize:'.78rem',color:'var(--muted)',lineHeight:1.6,marginBottom:10}}>
+                Right now you're on the default profile. If a friend also uses this same tracker, they should create their
+                own tracker below first — otherwise their sync will overwrite your data (and vice versa).
+              </div>
+              <button className="btn btn-gold" style={{fontSize:'.78rem'}} onClick={onCreateTracker}>+ Create My Own Tracker</button>
+            </>
+          )}
+        </div>
+
+        {[
+          { num:1, title:'Log in to The Show', body:<>Go to <a href="https://mlb26.theshow.com" target="_blank" style={{color:'var(--blue)'}}>mlb26.theshow.com</a> and sign in with your PSN, Xbox, or Nintendo account.</> },
+          { num:2, title:'Install the bookmarklet', body:(
+            <>
+              <div style={{marginBottom:10}}>
+                <strong style={{color:'var(--text)'}}>Mac / Windows Chrome (or any desktop browser):</strong> make sure your
+                bookmarks bar is visible (<kbd style={{background:'var(--s3)',border:'1px solid var(--border2)',borderRadius:4,padding:'2px 7px',fontFamily:'monospace',fontSize:'.8rem'}}>⌘ Shift B</kbd> on
+                Mac, <kbd style={{background:'var(--s3)',border:'1px solid var(--border2)',borderRadius:4,padding:'2px 7px',fontFamily:'monospace',fontSize:'.8rem'}}>Ctrl Shift B</kbd> on
+                Windows), then drag the gold "Sync MLB26" button below straight onto the bookmarks bar.
+              </div>
+              <div>
+                <strong style={{color:'var(--text)'}}>Windows (alternate method):</strong> right-click the bookmarks bar → <em>Add page</em>,
+                name it "Sync MLB26", and paste the copied code (use the Copy button below) into the URL field.
+              </div>
+            </>
+          )},
+          { num:3, title:'Run it', body:'From any mlb26.theshow.com tab (dashboard, programs, anywhere), click the "Sync MLB26" bookmark. It fetches every team\'s program data in the background — you don\'t need to navigate anywhere. A popup will confirm when it\'s done (usually 30–90 seconds).' },
+          { num:4, title:'Check the tracker', body:'Refresh this page to see your updated progress. Re-run the bookmarklet any time you want a fresh sync.' },
+        ].map(step => (
+          <div key={step.num} style={{display:'flex',gap:16,marginBottom:20}}>
+            <div style={{width:28,height:28,borderRadius:'50%',background:'var(--gold)',color:'#000',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:'.9rem',flexShrink:0,marginTop:2}}>{step.num}</div>
+            <div>
+              <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:'1rem',marginBottom:4}}>{step.title}</div>
+              <div style={{fontSize:'.84rem',color:'#b0b8c8',lineHeight:1.6}}>{step.body}</div>
+            </div>
+          </div>
+        ))}
+
+        <div style={{marginTop:8}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8,flexWrap:'wrap',gap:8}}>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:'.8rem',textTransform:'uppercase',letterSpacing:'.1em',color:'var(--muted)'}}>Bookmarklet</div>
+            <div style={{display:'flex',gap:8}}>
+              <a href={bookmarklet} className="btn btn-gold" style={{fontSize:'.75rem',textDecoration:'none'}} onClick={e => e.preventDefault()} draggable="true">
+                ⚾ Sync MLB26 (drag me)
+              </a>
+              <button className="btn btn-ghost" style={{fontSize:'.75rem'}} onClick={copy}>
+                {copied ? '✓ Copied!' : 'Copy Code'}
+              </button>
+            </div>
+          </div>
+          <pre style={{background:'var(--s2)',border:'1px solid var(--border)',borderRadius:8,padding:'14px 16px',fontSize:'.72rem',lineHeight:1.6,color:'#a8d4ff',overflowX:'auto',whiteSpace:'pre-wrap',wordBreak:'break-all'}}>
+            {bookmarklet}
+          </pre>
+          <div style={{fontSize:'.72rem',color:'var(--muted)',marginTop:8}}>
+            Updated your deployment? Re-install the bookmarklet above — old copies may not carry your sync key.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+createRoot(document.getElementById('root')).render(<App />);

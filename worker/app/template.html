@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MLB The Show 26 · Program Tracker</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;900&family=Barlow:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#08090d;--s1:#111318;--s2:#181b24;--s3:#1f2330;
+  --border:#252a38;--border2:#2e3448;
+  --gold:#e8c84a;--blue:#4a9eff;--green:#22c55e;--red:#ef4444;--purple:#a78bfa;
+  --text:#e8eaf2;--muted:#6b7280;--muted2:#4b5263;
+  --diam:#7dd3fc;--goldR:#fbbf24;--silv:#94a3b8;--brnz:#c97c4a;
+}
+body{background:var(--bg);color:var(--text);font-family:'Barlow',sans-serif;min-height:100vh}
+body::before{content:'';position:fixed;inset:0;background:
+  radial-gradient(ellipse 60% 30% at 50% 0%,rgba(232,200,74,.05) 0%,transparent 60%),
+  radial-gradient(ellipse 30% 50% at 95% 30%,rgba(74,158,255,.04) 0%,transparent 50%);
+  pointer-events:none;z-index:0}
+
+/* Layout */
+.app{display:grid;grid-template-columns:260px 1fr;min-height:100vh;position:relative;z-index:1}
+.sidebar{background:var(--s1);border-right:1px solid var(--border);display:flex;flex-direction:column;position:sticky;top:0;height:100vh;overflow-y:auto}
+.main{overflow-y:auto;padding:24px}
+
+/* Mobile topbar + off-canvas sidebar drawer — hidden entirely on desktop */
+.mobile-topbar{display:none}
+.mobile-backdrop{display:none}
+
+/* Sidebar */
+.sidebar-logo{padding:20px 16px 16px;border-bottom:1px solid var(--border)}
+.logo-title{font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.3rem;color:var(--gold);text-transform:uppercase;letter-spacing:.05em}
+.logo-sub{font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.12em;margin-top:2px}
+
+.sidebar-section{padding:12px 0;border-bottom:1px solid var(--border)}
+.sidebar-section-label{font-family:'Barlow Condensed',sans-serif;font-size:.65rem;text-transform:uppercase;letter-spacing:.15em;color:var(--muted2);padding:0 16px 8px}
+.sidebar-btn{display:flex;align-items:center;gap:10px;width:100%;padding:8px 16px;background:none;border:none;color:var(--muted);font-family:'Barlow',sans-serif;font-size:.85rem;cursor:pointer;transition:all .15s;text-align:left}
+.sidebar-btn:hover{color:var(--text);background:var(--s2)}
+.sidebar-btn.active{color:var(--gold);background:rgba(232,200,74,.08)}
+.sidebar-btn .dot{width:8px;height:8px;border-radius:50%;background:var(--border2);flex-shrink:0;transition:background .15s}
+.sidebar-btn.active .dot,.sidebar-btn.has-progress .dot{background:var(--gold)}
+.sidebar-btn.complete .dot{background:var(--green)}
+.sidebar-pct{margin-left:auto;font-family:'Barlow Condensed',sans-serif;font-size:.75rem;font-weight:700;color:var(--muted2)}
+.sidebar-btn.active .sidebar-pct{color:var(--gold)}
+.sidebar-btn.complete .sidebar-pct{color:var(--green)}
+
+.btn{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;padding:6px 12px;border-radius:5px;border:none;cursor:pointer;transition:all .15s;white-space:nowrap}
+.btn-gold{background:var(--gold);color:#000}
+.btn-gold:hover{background:#f0d060}
+.btn-gold:disabled{opacity:.4;cursor:not-allowed}
+.btn-ghost{background:transparent;color:var(--muted);border:1px solid var(--border)}
+.btn-ghost:hover{color:var(--text);border-color:var(--border2)}
+
+/* Main panels */
+.page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;gap:12px;flex-wrap:wrap}
+.page-title{font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.6rem;text-transform:uppercase;letter-spacing:.04em}
+.team-color-accent{display:inline-block;width:6px;height:28px;border-radius:3px;margin-right:10px;vertical-align:middle}
+
+/* Mission cards */
+.missions-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px;margin-bottom:28px}
+.mission-card{background:var(--s1);border:1px solid var(--border);border-radius:8px;padding:14px 16px;cursor:pointer;transition:all .15s;user-select:none}
+.mission-card:hover{border-color:var(--border2);transform:translateY(-1px)}
+.mission-card.done{border-color:rgba(34,197,94,.25);opacity:.7}
+.mission-card.active-edit{border-color:var(--gold);box-shadow:0 0 0 2px rgba(232,200,74,.15)}
+.mission-top{display:flex;align-items:flex-start;gap:10px;margin-bottom:10px}
+.mission-icon{width:32px;height:32px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0}
+.mission-info{flex:1;min-width:0}
+.mission-name{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:.95rem;line-height:1.2}
+.mission-type{font-size:.68rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-top:2px}
+.mission-check{width:20px;height:20px;border-radius:5px;border:2px solid var(--border2);display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s}
+.mission-check.done{background:var(--green);border-color:var(--green)}
+.mission-check.api{background:var(--blue);border-color:var(--blue)}
+
+.progress-section{display:flex;align-items:center;gap:8px}
+.prog-track{flex:1;height:5px;background:var(--border);border-radius:3px;overflow:hidden}
+.prog-fill{height:100%;border-radius:3px;transition:width .4s}
+.prog-nums{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:.8rem;color:var(--muted);white-space:nowrap;min-width:52px;text-align:right}
+.prog-nums.active-stat{color:var(--gold)}
+
+/* Overview dashboard */
+.overview-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-bottom:24px}
+.stat-tile{background:var(--s1);border:1px solid var(--border);border-radius:8px;padding:14px 16px}
+.stat-tile-val{font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:2rem;line-height:1;color:var(--gold)}
+.stat-tile-val.blue{color:var(--blue)}
+.stat-tile-val.green{color:var(--green)}
+.stat-tile-label{font-size:.68rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-top:4px}
+
+.urgency-list{display:flex;flex-direction:column;gap:8px;margin-bottom:24px}
+.urgency-row{background:var(--s1);border:1px solid var(--border);border-left:3px solid var(--border);border-radius:0 8px 8px 0;padding:10px 14px;display:flex;align-items:center;gap:12px;cursor:pointer;transition:all .15s}
+.urgency-row:hover{border-color:var(--border2);background:var(--s2)}
+.urgency-team{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:.85rem;width:100px;flex-shrink:0}
+.urgency-mission{font-size:.8rem;color:var(--muted);flex:1}
+.urgency-remaining{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:.9rem;color:var(--gold);flex-shrink:0}
+.urgency-pct{font-size:.7rem;color:var(--muted);flex-shrink:0;min-width:36px;text-align:right}
+
+.section-title{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:.85rem;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);margin-bottom:10px}
+
+/* Progress rings */
+.ring-wrap{position:relative;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+.ring-label{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;pointer-events:none;white-space:nowrap}
+
+/* Hero */
+.hero-section{display:flex;align-items:center;gap:28px;margin-bottom:28px;padding:22px 24px;background:linear-gradient(135deg,var(--s1) 0%,var(--s2) 60%,rgba(232,200,74,.04) 100%);border:1px solid var(--border);border-radius:14px;position:relative;overflow:hidden}
+.hero-section::before{content:'';position:absolute;right:-40px;top:-40px;width:200px;height:200px;background:radial-gradient(circle,rgba(232,200,74,.06) 0%,transparent 70%);pointer-events:none}
+.hero-stats{display:grid;grid-template-columns:1fr 1fr;gap:14px 20px;flex:1}
+.hero-stat{display:flex;flex-direction:column;gap:2px}
+.hero-val{font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1.9rem;line-height:1}
+.hero-label{font-size:.6rem;text-transform:uppercase;letter-spacing:.12em;color:var(--muted)}
+
+/* Division rings */
+.div-rings{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:24px}
+.div-ring-card{text-align:center;padding:12px 6px 10px;background:var(--s1);border:1px solid var(--border);border-radius:10px;cursor:default;transition:border-color .2s}
+.div-ring-card:hover{border-color:var(--border2)}
+.div-ring-name{font-family:'Barlow Condensed',sans-serif;font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-top:6px;line-height:1.2}
+.div-ring-sub{font-size:.6rem;color:var(--muted2);margin-top:2px}
+
+/* Team grid */
+.team-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:7px;margin-bottom:28px}
+.team-tile{background:var(--s1);border:1px solid var(--border);border-radius:9px;padding:10px 6px 8px;text-align:center;cursor:pointer;transition:all .18s;position:relative;overflow:hidden}
+.team-tile:hover{transform:translateY(-2px);border-color:var(--border2)}
+.team-tile-abbr{font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:1rem;letter-spacing:.03em;margin-bottom:2px}
+.team-tile-city{font-size:.6rem;color:var(--muted);margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 2px}
+.team-tile-pct{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:.78rem}
+.team-tile-bar{height:3px;border-radius:2px;margin-top:6px;overflow:hidden;background:var(--border2)}
+.team-tile-fill{height:100%;border-radius:2px;transition:width 1.2s cubic-bezier(.4,0,.2,1)}
+
+/* Animations */
+@keyframes fadeSlideIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes ringPulse{0%,100%{opacity:1}50%{opacity:.7}}
+.animate-in{animation:fadeSlideIn .35s ease both}
+
+/* Urgency bars */
+.urgency-bar{flex:1;margin:0 8px;height:4px;background:var(--border);border-radius:2px;overflow:hidden;flex-shrink:0}
+.urgency-bar-fill{height:100%;border-radius:2px;transition:width .8s ease}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+@media(max-width:900px){.div-rings{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:700px){
+  .app{grid-template-columns:1fr;padding-top:52px}
+  .hero-section{flex-direction:column;text-align:center}
+  .div-rings{grid-template-columns:repeat(3,1fr)}
+  /* 44px minimum touch target for interactive elements on mobile (desktop density unchanged) */
+  .sidebar-btn{min-height:44px}
+  .team-tile{min-height:44px}
+  .urgency-row{min-height:44px}
+  .mission-card{min-height:44px}
+  button,.btn{min-height:44px}
+
+  /* Sidebar becomes an off-canvas drawer instead of stacking (in full, ~30-team length)
+     above the main content — without this, the dashboard was pushed ~1900px down the page. */
+  .mobile-topbar{
+    display:flex;align-items:center;gap:12px;position:fixed;top:0;left:0;right:0;height:52px;
+    padding:0 14px;background:var(--s1);border-bottom:1px solid var(--border);z-index:60;
+  }
+  .mobile-hamburger{
+    width:44px;height:44px;flex-shrink:0;background:none;border:none;cursor:pointer;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
+  }
+  .mobile-hamburger span{display:block;width:20px;height:2px;background:var(--text);border-radius:1px}
+  .mobile-backdrop{
+    display:block;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:70;
+  }
+  .sidebar{
+    position:fixed;top:0;left:0;height:100vh;width:82%;max-width:300px;z-index:80;
+    transform:translateX(-100%);transition:transform .25s ease;box-shadow:2px 0 24px rgba(0,0,0,.5);
+  }
+  .sidebar.open{transform:translateX(0)}
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<!--APP_JS-->
+</body>
+</html>
