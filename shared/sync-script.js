@@ -268,17 +268,40 @@ const SYNC_SCRIPT = `(async function() {
     return changed;
   }
 
+  // POSTs JSON to an ingest endpoint and reports the outcome instead of discarding it:
+  // returns null on success, or an error-message string on any non-2xx response / network
+  // failure (using the server's own error message when it sent one, e.g. the rate-limit or
+  // wrong-tab explanations). A 401 — bad or missing sync key — is thrown as a fatal error,
+  // since every later write in the run would fail identically; aborting immediately gets the
+  // real problem in front of the user instead of a green "Done" that saved nothing.
+  async function postJson(path, body) {
+    var r;
+    try {
+      r = await fetchT(INGEST_ORIGIN + path + UID_QS, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Sync-Key': SYNC_KEY },
+        body: JSON.stringify(body)
+      });
+    } catch (e) {
+      return 'network error (' + e.message + ')';
+    }
+    if (r.ok) return null;
+    var detail = '';
+    try { detail = (await r.json()).error || ''; } catch (e) {}
+    var msg = detail || ('HTTP ' + r.status);
+    if (r.status === 401) {
+      throw new Error(msg + '. Reinstall the bookmarklet from the tracker Sync Data page so it carries the current key');
+    }
+    return msg;
+  }
+
   async function postTeamsBatch(batchTeams, syncId, summary) {
     var body = { syncId: syncId, partial: true, teams: batchTeams, savedAt: new Date().toISOString() };
     if (summary) body.summary = summary;
-    await fetchT(INGEST_ORIGIN + '/ingest-programs' + UID_QS, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Sync-Key': SYNC_KEY },
-      body: JSON.stringify(body)
-    });
+    return await postJson('/ingest-programs', body);
   }
 
-  async function syncChangedTeams(hubMap, changedKeys, syncId, hubScannedCount) {
+  async function syncChangedTeams(hubMap, changedKeys, syncId, hubScannedCount, writeErrors) {
     var teamsScraped = 0;
     for (var b = 0; b < changedKeys.length; b += BATCH) {
       var batchKeys = changedKeys.slice(b, b + BATCH);
@@ -299,7 +322,8 @@ const SYNC_SCRIPT = `(async function() {
       if (Object.keys(batchTeams).length > 0) {
         var isLast = (b + BATCH) >= changedKeys.length;
         var summary = isLast ? { teamsScanned: hubScannedCount, teamsScraped: teamsScraped, programsFound: null } : null;
-        await postTeamsBatch(batchTeams, syncId, summary);
+        var postErr = await postTeamsBatch(batchTeams, syncId, summary);
+        if (postErr) writeErrors.push(postErr);
       }
       setProgress(40 + Math.round((b + batchKeys.length) / Math.max(changedKeys.length, 1) * 40)); // 40-80%
       await sleep(600);
@@ -484,15 +508,17 @@ const SYNC_SCRIPT = `(async function() {
     var changedKeys = computeChanged(hubMap, storedTeams, forceFull);
     var syncId = Date.now().toString(36);
     var teamsScraped = 0;
+    var writeErrors = [];
     if (changedKeys.length === 0) {
       log('Teams already up to date.');
       // Nothing changed, so there's no batch to post — but still record that a sync ran,
       // so the dashboard's "Last synced" indicator reflects this run instead of showing
       // stale/amber even though everything was checked and confirmed unchanged.
-      await postTeamsBatch({}, syncId, { teamsScanned: hubScannedCount, teamsScraped: 0, programsFound: null });
+      var touchErr = await postTeamsBatch({}, syncId, { teamsScanned: hubScannedCount, teamsScraped: 0, programsFound: null });
+      if (touchErr) writeErrors.push(touchErr);
       setProgress(80);
     } else {
-      teamsScraped = await syncChangedTeams(hubMap, changedKeys, syncId, hubScannedCount);
+      teamsScraped = await syncChangedTeams(hubMap, changedKeys, syncId, hubScannedCount, writeErrors);
     }
 
     log('Checking general programs...');
@@ -501,14 +527,19 @@ const SYNC_SCRIPT = `(async function() {
 
     if (Object.keys(generalPrograms).length > 0) {
       log('Saving general programs...');
-      await fetchT(INGEST_ORIGIN + '/ingest-general-programs' + UID_QS, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Sync-Key': SYNC_KEY },
-        body: JSON.stringify({ programs: generalPrograms, savedAt: new Date().toISOString() })
-      });
+      var genErr = await postJson('/ingest-general-programs', { programs: generalPrograms, savedAt: new Date().toISOString() });
+      if (genErr) writeErrors.push(genErr);
     }
 
     setProgress(100);
+    if (writeErrors.length > 0) {
+      // Scraping worked but some saves were rejected — this run is (partially) missing from
+      // the tracker, and pretending otherwise is how data quietly goes stale. Surface the
+      // first server message; later ones are almost always the same cause.
+      setDone(false, writeErrors.length + ' save request' + (writeErrors.length === 1 ? '' : 's') +
+        ' failed: ' + writeErrors[0] + '. The tracker may be missing this run — try again in a few minutes.');
+      return;
+    }
     var summaryText = hubScannedCount + ' teams scanned, ' + teamsScraped + ' updated, ' +
       Object.keys(generalPrograms).length + ' other programs. Refresh the tracker to see updates.';
     log('Done.');
