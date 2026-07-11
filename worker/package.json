@@ -1,0 +1,13 @@
+{
+  "name": "mlb26-tracker-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.2",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  }
+}

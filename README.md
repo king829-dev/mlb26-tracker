@@ -17,9 +17,14 @@ mlb26-tracker/
 │   └── sync-script.js  # Bookmarklet scraping logic, shared by both deployment options below
 ├── worker/              # Option A: Cloudflare Worker deployment
 │   ├── wrangler.toml    # Deployment config + KV binding
+│   ├── package.json     # Dashboard build tooling (esbuild + React) — only needed if you edit the UI
+│   ├── build.mjs        # Compiles app/ into src/app.html
+│   ├── app/
+│   │   ├── app.jsx      # Tracker dashboard source (React)
+│   │   └── template.html # HTML shell + styles that the compiled bundle is inlined into
 │   └── src/
 │       ├── index.js     # Worker entry point (routes: /ingest-programs, /programs-data, /sync.js, /)
-│       └── app.html     # Tracker React app (self-contained SPA, includes bookmarklet setup instructions)
+│       └── app.html     # GENERATED tracker app — built from app/ by `npm run build`, committed so deploying needs no build step
 ├── server/              # Option B: self-hosted (Docker) deployment
 │   ├── server.js        # Express server, same routes as the Worker, file-based storage instead of KV
 │   ├── store.js
@@ -110,6 +115,20 @@ origin is serving it, so no code changes are needed either way.
 To preview locally before deploying:
 ```bash
 wrangler dev
+```
+
+### Editing the dashboard UI (optional — skip if you're just deploying)
+
+The served dashboard (`worker/src/app.html`) is a **generated file**: the React source lives in
+`worker/app/app.jsx` (with the HTML shell/styles in `worker/app/template.html`), and is compiled and
+bundled together with React at build time — the page ships zero CDN dependencies and no in-browser
+compile step. The generated file is committed, so plain deploys need no build. If you change anything
+under `worker/app/`, rebuild before deploying:
+
+```bash
+cd worker
+npm install   # first time only
+npm run build
 ```
 
 ### 7. Lock down your ingest endpoints (strongly recommended)
